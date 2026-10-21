@@ -75,18 +75,6 @@ The current image targets Linux amd64.
 The current implementation is a local Spark/Sedona pipeline that writes Parquet.
 Iceberg, dbt, orchestration and AWS deployment are future work.
 
-## Repository privacy
-
-Planning documents, agent instructions, local data/results and credentials stay
-outside version control and container builds. The publication check uses an
-explicit set of source/configuration locations; review it when adding new areas.
-Before pushing, run `python scripts/check_publication.py --history --secrets`.
-Git ignore rules do not remove files that already exist in Git history.
-
-Use environment variables or an appropriate secrets manager for future credentials;
-never put values in source files, configuration examples, commits or CI logs.
-A private repository is not a credential store.
-
 ## Data attribution
 
 © OpenStreetMap contributors, Overture Maps Foundation. Overture buildings and base
