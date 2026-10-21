@@ -1,0 +1,12 @@
+services:
+  pipeline:
+    build: .
+    image: urban-geography:local
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      PYTHONPATH: /workspace/src
+      SPARK_LOCAL_IP: 127.0.0.1
+    mem_limit: 4g
+    cpus: 2

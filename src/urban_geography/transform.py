@@ -1,0 +1,76 @@
+"""Spatial SQL semantics shared by the pilot and its independent correctness tests."""
+
+from pyspark.sql import DataFrame, Window
+from pyspark.sql import functions as F
+
+from urban_geography.config import RunConfig
+
+METRIC_VERSION = "park_proximity_v1"
+
+
+def geometry_frame(frame: DataFrame, config: RunConfig) -> DataFrame:
+    decoded = frame.select("id", F.expr("ST_GeomFromWKB(geometry)").alias("wgs84"))
+    total = decoded.count()
+    if not total or decoded.filter("id IS NULL OR id = ''").count():
+        raise ValueError("Empty input or null/blank feature IDs")
+    if decoded.select("id").distinct().count() != total:
+        raise ValueError("Duplicate source IDs")
+    bad = decoded.filter("""
+        wgs84 IS NULL OR ST_IsEmpty(wgs84) OR NOT ST_IsValid(wgs84)
+        OR ST_GeometryType(wgs84) NOT IN ('ST_Polygon', 'ST_MultiPolygon')
+        OR NOT (ST_XMin(wgs84) >= -180 AND ST_XMax(wgs84) <= 180
+                AND ST_YMin(wgs84) >= -90 AND ST_YMax(wgs84) <= 90)
+    """).count()
+    if bad:
+        raise ValueError(f"Invalid geometry records: {bad} of {total}; publication blocked")
+    return decoded.select(
+        "id", F.expr(f"ST_Transform(wgs84, 'EPSG:4326', '{config.metric_crs}')").alias("geom")
+    )
+
+
+def select_buildings(projected: DataFrame, config: RunConfig) -> DataFrame:
+    west, south, east, north = config.bbox
+    polygon = (
+        f"POLYGON(({west} {south},{east} {south},{east} {north},{west} {north},{west} {south}))"
+    )
+    return projected.select("id", F.expr("ST_PointOnSurface(geom)").alias("point")).filter(
+        F.expr(
+            f"ST_Covers(ST_GeomFromWKT('{polygon}'), "
+            f"ST_Transform(point, '{config.metric_crs}', 'EPSG:4326'))"
+        )
+    )
+
+
+def proximity(buildings: DataFrame, parks: DataFrame, threshold_m: float) -> DataFrame:
+    # Straightforward bounded pilot baseline. Do not use the cross join at large scale.
+    pairs = (
+        buildings.alias("b")
+        .crossJoin(parks.alias("p"))
+        .select(
+            F.col("b.id").alias("building_id"),
+            F.col("p.id").alias("park_id"),
+            F.expr("ST_Distance(b.point, p.geom)").alias("distance_m"),
+        )
+        .filter(F.col("distance_m") <= threshold_m)
+    )
+    rank = Window.partitionBy("building_id").orderBy("distance_m", "park_id")
+    nearest = pairs.withColumn("rank", F.row_number().over(rank)).filter("rank = 1").drop("rank")
+    coordinates = buildings.select(
+        F.col("id").alias("building_id"),
+        F.expr("ST_X(point)").alias("x_m"),
+        F.expr("ST_Y(point)").alias("y_m"),
+    )
+    return (
+        coordinates.join(nearest, "building_id", "left")
+        .withColumn("within_threshold", F.col("park_id").isNotNull())
+        .withColumn(
+            "grid_id",
+            F.concat_ws(
+                "_",
+                F.lit("epsg3763_250m"),
+                F.floor(F.col("x_m") / 250),
+                F.floor(F.col("y_m") / 250),
+            ),
+        )
+        .drop("x_m", "y_m")
+    )

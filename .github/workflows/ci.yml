@@ -1,0 +1,27 @@
+name: local-pipeline
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify publishable paths and scan Git history
+        run: python scripts/check_publication.py --history --secrets
+      - name: Build pinned runtime
+        run: docker compose build
+      - name: Lint
+        run: docker compose run --rm pipeline ruff check .
+      - name: Formatting
+        run: docker compose run --rm pipeline ruff format --check .
+      - name: Types
+        run: docker compose run --rm pipeline mypy
+      - name: Offline tests including Spark
+        run: docker compose run --rm --no-deps pipeline pytest -q
