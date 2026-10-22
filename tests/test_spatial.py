@@ -77,7 +77,9 @@ def test_projection_and_membership_match_independent_proj(spark):
     polygon = box(-8.43, 40.20, -8.429, 40.201)
     raw = spark.createDataFrame([("b", bytes(polygon.wkb))], "id string, geometry binary")
     transformed = geometry_frame(raw, config)
-    area = transformed.selectExpr("ST_Area(geom) AS area").first().area
+    area_row = transformed.selectExpr("ST_Area(geom) AS area").first()
+    assert area_row is not None, "Expected a projected geometry"
+    area = area_row.area
     reference = transform(Transformer.from_crs(4326, 3763, always_xy=True).transform, polygon)
     assert area == pytest.approx(reference.area, rel=1e-6)
     assert select_buildings(transformed, config).count() == 1
@@ -101,5 +103,6 @@ def test_park_outside_area_still_matches_inside_building(spark):
         spark, {"inside": Point(10, 10)}, {"outside": box(-100, 0, -10, 100)}
     )
     result = proximity(buildings, parks, 500).first()
+    assert result is not None, "Expected a building proximity result"
     assert result.park_id == "outside"
     assert result.distance_m == 20
