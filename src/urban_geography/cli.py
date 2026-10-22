@@ -5,6 +5,7 @@ import json
 import platform
 import time
 import uuid
+from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -49,7 +50,9 @@ def process(config: RunConfig, raw: Path, output: Path) -> Path:
             .withColumn("threshold_m", F.lit(config.threshold_m))
             .cache()
         )
-        (staging / "plan.txt").write_text(facts._jdf.queryExecution().toString(), encoding="utf-8")
+        with (staging / "plan.txt").open("w", encoding="utf-8") as plan_file:
+            with redirect_stdout(plan_file):
+                facts.explain(mode="extended")
         actual = facts.count()
         matched = facts.filter("within_threshold").count()
         if actual != building_count:
