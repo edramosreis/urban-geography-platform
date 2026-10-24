@@ -1,0 +1,9 @@
+{
+  "area_id": "coimbra_municipality",
+  "source_release": "CAOP2025",
+  "municipality_code": "0603",
+  "municipality_name": "Coimbra",
+  "metadata_id": "198497815bf647ecaa990c34c42e932e",
+  "expected_geometry_sha256": "0348fd3188181dde8317bf1d404608dfdbd27fecc061856400bad5c678ea09d2",
+  "max_download_bytes": 4194304
+}
