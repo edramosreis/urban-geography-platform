@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pyproj import Transformer
 from pyspark.sql import functions as F
-from shapely.geometry import Point, Polygon, box
+from shapely.geometry import MultiPolygon, Point, Polygon, box
 from shapely.ops import transform
 
 from urban_geography.config import load_config
@@ -106,3 +106,58 @@ def test_park_outside_area_still_matches_inside_building(spark):
     assert result is not None, "Expected a building proximity result"
     assert result.park_id == "outside"
     assert result.distance_m == 20
+
+
+def test_boundary_selection_edges_holes_parts_and_pilot_window(spark):
+    config = load_config(Path("configs/coimbra_pilot.json"))
+    footprints = {
+        "inside": box(-8.4281, 40.2079, -8.4279, 40.2081),
+        "outer_edge": box(-8.4301, 40.2019, -8.4299, 40.2021),
+        "hole_edge": box(-8.4261, 40.2049, -8.4259, 40.2051),
+        "hole": box(-8.4251, 40.2049, -8.4249, 40.2051),
+        "outside": box(-8.4321, 40.2099, -8.4319, 40.2101),
+        "other_part": box(-8.4171, 40.2099, -8.4169, 40.2101),
+        "outside_pilot": box(-8.4131, 40.2099, -8.4129, 40.2101),
+        "crossing_inside": box(-8.4301, 40.2089, -8.4297, 40.2091),
+        "crossing_outside": box(-8.4303, 40.2099, -8.4299, 40.2101),
+    }
+    raw = spark.createDataFrame(
+        [(key, bytes(value.wkb)) for key, value in footprints.items()], "id string, geometry binary"
+    )
+    projected = geometry_frame(raw, config)
+    # Use the actual selection coordinates to put edges exactly on floating-point values.
+    # Otherwise a projection round trip can move a nominal edge by a few nanometres.
+    coordinates = projected.selectExpr(
+        "id", "ST_Transform(ST_PointOnSurface(geom), 'EPSG:3763', 'EPSG:4326') AS point"
+    ).selectExpr("id", "ST_X(point) AS x", "ST_Y(point) AS y")
+    points = {row.id: Point(row.x, row.y) for row in coordinates.collect()}
+    west = points["outer_edge"].x
+    hole_west = points["hole_edge"].x
+    main = Polygon(
+        [(west, 40.201), (-8.419, 40.201), (-8.419, 40.212), (west, 40.212)],
+        [[(hole_west, 40.204), (-8.424, 40.204), (-8.424, 40.206), (hole_west, 40.206)]],
+    )
+    boundary = MultiPolygon(
+        [main, box(-8.418, 40.209, -8.416, 40.211), box(-8.414, 40.209, -8.412, 40.211)]
+    )
+    assert boundary.is_valid
+    assert boundary.boundary.covers(points["outer_edge"])
+    assert boundary.boundary.covers(points["hole_edge"])
+    assert boundary.covers(points["outside_pilot"])
+    assert not boundary.covers(points["hole"])
+    assert not boundary.covers(footprints["crossing_inside"])
+    assert boundary.intersects(footprints["crossing_outside"])
+
+    selected = select_buildings(projected, config, bytes(boundary.wkb))
+    actual = {row.id for row in selected.collect()}
+    expected = {"inside", "outer_edge", "hole_edge", "other_part", "crossing_inside"}
+    assert actual == expected
+    pilot = box(*config.bbox)
+    assert actual == {
+        key for key, point in points.items() if pilot.covers(point) and boundary.covers(point)
+    }
+    assert set(selected.columns) == {"id", "point"}
+    # Adding a boundary is an intersection, never a replacement for the pilot window.
+    assert {row.id for row in select_buildings(projected, config).collect()} == (
+        set(footprints) - {"outside_pilot"}
+    )

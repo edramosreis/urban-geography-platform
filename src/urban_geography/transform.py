@@ -28,17 +28,24 @@ def geometry_frame(frame: DataFrame, config: RunConfig) -> DataFrame:
     )
 
 
-def select_buildings(projected: DataFrame, config: RunConfig) -> DataFrame:
+def select_buildings(
+    projected: DataFrame, config: RunConfig, boundary_wkb: bytes | None = None
+) -> DataFrame:
+    """Select full-footprint representative points in the pilot and optional CRS84 boundary."""
     west, south, east, north = config.bbox
     polygon = (
         f"POLYGON(({west} {south},{east} {south},{east} {north},{west} {north},{west} {south}))"
     )
-    return projected.select("id", F.expr("ST_PointOnSurface(geom)").alias("point")).filter(
-        F.expr(
-            f"ST_Covers(ST_GeomFromWKT('{polygon}'), "
-            f"ST_Transform(point, '{config.metric_crs}', 'EPSG:4326'))"
+    points = projected.select("id", F.expr("ST_PointOnSurface(geom)").alias("point"))
+    selected = points.withColumn(
+        "selection_point", F.expr(f"ST_Transform(point, '{config.metric_crs}', 'EPSG:4326')")
+    ).filter(F.expr(f"ST_Covers(ST_GeomFromWKT('{polygon}'), selection_point)"))
+    if boundary_wkb is not None:
+        # Keep the pilot window even when the retained municipality is much larger.
+        selected = selected.withColumn("boundary_wkb", F.lit(boundary_wkb)).filter(
+            F.expr("ST_Covers(ST_GeomFromWKB(boundary_wkb), selection_point)")
         )
-    )
+    return selected.select("id", "point")
 
 
 def proximity(buildings: DataFrame, parks: DataFrame, threshold_m: float) -> DataFrame:
