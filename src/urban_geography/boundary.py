@@ -158,6 +158,48 @@ def validate_retained_boundary(path: Path, spec: BoundarySpec) -> dict[str, Any]
     return manifest
 
 
+@dataclass(frozen=True)
+class RetainedBoundary:
+    spec: BoundarySpec
+    geometry_wkb: bytes
+    manifest_sha256: str
+    geojson_sha256: str
+    acquired_at_utc: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "area_id": self.spec.area_id,
+            "source_release": self.spec.source_release,
+            "municipality_code": self.spec.municipality_code,
+            "municipality_name": self.spec.municipality_name,
+            "metadata_id": self.spec.metadata_id,
+            "geometry_sha256": self.spec.expected_geometry_sha256,
+            "manifest_sha256": self.manifest_sha256,
+            "geojson_sha256": self.geojson_sha256,
+            "acquired_at_utc": self.acquired_at_utc,
+            "source_crs": CRS84,
+            "license": "CC-BY-4.0",
+            "license_url": LICENSE_URL,
+            "attribution": ATTRIBUTION,
+        }
+
+
+def load_retained_boundary(spec: BoundarySpec, root: Path) -> RetainedBoundary:
+    """Load verified local inputs only; acquisition is a separate explicit operation."""
+    path = root / spec.source_release / spec.area_id / spec.expected_geometry_sha256[:16]
+    manifest = validate_retained_boundary(path, spec)
+    content = (path / "boundary.geojson").read_bytes()
+    if sha256(content) != manifest["files"]["boundary.geojson"]:
+        raise ValueError("Retained boundary changed while loading")
+    return RetainedBoundary(
+        spec=spec,
+        geometry_wkb=bytes(shape(json.loads(content)["geometry"]).wkb),
+        manifest_sha256=sha256((path / "manifest.json").read_bytes()),
+        geojson_sha256=sha256(content),
+        acquired_at_utc=manifest["acquired_at_utc"],
+    )
+
+
 def acquire_boundary(spec: BoundarySpec, root: Path) -> Path:
     destination = root / spec.source_release / spec.area_id / spec.expected_geometry_sha256[:16]
     if destination.exists():

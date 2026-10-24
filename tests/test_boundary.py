@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 from pyproj import Transformer
-from shapely.geometry import Polygon, box, mapping
+from shapely.geometry import Polygon, box, mapping, shape
 from shapely.ops import transform
 
 from urban_geography.boundary import (
@@ -17,6 +17,8 @@ from urban_geography.boundary import (
     BoundarySpec,
     acquire_boundary,
     geometry_digest,
+    load_retained_boundary,
+    sha256,
     validate_feature,
     validate_metadata,
     validate_retained_boundary,
@@ -113,6 +115,12 @@ def test_retention_preserves_geometry_reuses_offline_and_detects_corruption(
     calls = mock_official_service(monkeypatch, sample)
     path = acquire_boundary(sample["spec"], tmp_path)
     manifest = validate_retained_boundary(path, sample["spec"])
+    loaded = load_retained_boundary(sample["spec"], tmp_path)
+    assert loaded.geometry_wkb == bytes(shape(sample["feature"]["geometry"]).wkb)
+    assert loaded.as_dict()["geometry_sha256"] == sample["spec"].expected_geometry_sha256
+    assert loaded.manifest_sha256 == sha256((path / "manifest.json").read_bytes())
+    assert loaded.geojson_sha256 == sha256((path / "boundary.geojson").read_bytes())
+    assert loaded.as_dict()["attribution"] == ATTRIBUTION
     retained = json.loads((path / "boundary.geojson").read_text())
 
     assert retained["geometry"] == json.loads(json.dumps(sample["feature"]["geometry"]))
@@ -207,3 +215,14 @@ def test_official_area_disagreement_is_rejected(official_sample):
 def test_boundary_budget_cannot_expand_beyond_the_small_acquisition(official_sample):
     with pytest.raises(ValueError, match="4 MiB"):
         replace(official_sample["spec"], max_download_bytes=5 * 1024 * 1024)
+
+
+def test_loading_missing_boundary_does_not_attempt_acquisition(
+    tmp_path, monkeypatch, official_sample
+):
+    def unexpected_download(*args, **kwargs):
+        raise AssertionError("Processing must never acquire a missing boundary")
+
+    monkeypatch.setattr(requests.Session, "get", unexpected_download)
+    with pytest.raises(FileNotFoundError):
+        load_retained_boundary(official_sample["spec"], tmp_path)

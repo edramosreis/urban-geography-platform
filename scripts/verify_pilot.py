@@ -10,6 +10,7 @@ from shapely import from_wkb
 from shapely.geometry import box
 from shapely.ops import transform
 
+from urban_geography.boundary import load_boundary_spec, load_retained_boundary
 from urban_geography.config import load_config
 from urban_geography.ingest import config_key, validate_raw
 
@@ -19,13 +20,27 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/coimbra_pilot.json"))
     parser.add_argument("--output", type=Path, default=Path("artifacts/coimbra-pilot"))
     parser.add_argument("--compare-output", type=Path)
+    parser.add_argument("--raw-root", type=Path, default=Path("data/raw"))
+    parser.add_argument("--boundary-config", type=Path)
+    parser.add_argument("--boundary-root", type=Path, default=Path("data/boundaries"))
     args = parser.parse_args()
     config = load_config(args.config)
-    raw = Path("data/raw") / config.release / config.area_id / config_key(config)
+    raw = args.raw_root / config.release / config.area_id / config_key(config)
     validate_raw(raw, config)
     forward = Transformer.from_crs(4326, 3763, always_xy=True).transform
     reverse = Transformer.from_crs(3763, 4326, always_xy=True).transform
     area = box(*config.bbox)
+    boundary = (
+        load_retained_boundary(load_boundary_spec(args.boundary_config), args.boundary_root)
+        if args.boundary_config
+        else None
+    )
+    summary = json.loads((args.output / "summary.json").read_text(encoding="utf-8"))
+    expected_boundary = boundary.as_dict() if boundary else None
+    if summary.get("selection", {}).get("boundary") != expected_boundary:
+        raise ValueError("Run boundary lineage differs from the requested boundary")
+    if boundary:
+        area = area.intersection(from_wkb(boundary.geometry_wkb))
     buildings = {}
     for row in pq.read_table(raw / "building.parquet").to_pylist():
         point = transform(forward, from_wkb(row["geometry"])).representative_point()
@@ -62,6 +77,7 @@ def main() -> None:
     assert sum(row["buildings_within"] for row in grids) == matched
     result = {
         "oracle": "Shapely + PROJ",
+        "boundary_geometry_sha256": boundary.spec.expected_geometry_sha256 if boundary else None,
         "rows_checked": len(facts),
         "matched": matched,
         "distance_tolerance_m": 1e-4,

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from pyspark.sql import functions as F
 
+from urban_geography.boundary import RetainedBoundary, load_boundary_spec, load_retained_boundary
 from urban_geography.config import RunConfig, load_config
 from urban_geography.ingest import config_key, digest, extract, validate_raw
 from urban_geography.spark import create_session
@@ -23,18 +24,30 @@ from urban_geography.transform import (
 )
 
 
-def process(config: RunConfig, raw: Path, output: Path) -> Path:
+def process(
+    config: RunConfig, raw: Path, output: Path, *, boundary: RetainedBoundary | None = None
+) -> Path:
     manifest = validate_raw(raw, config)
     if output.exists():
         raise ValueError("Output already exists; use a new run path (raw inputs are reusable)")
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = output.parent / f".run-{uuid.uuid4().hex}"
     staging.mkdir()
+    selection_version = (
+        "point_on_surface_bbox_boundary_v1" if boundary else "point_on_surface_bbox_v1"
+    )
+    boundary_columns = {
+        "boundary_id": boundary.spec.area_id if boundary else None,
+        "boundary_release": boundary.spec.source_release if boundary else None,
+        "boundary_geometry_sha256": boundary.spec.expected_geometry_sha256 if boundary else None,
+    }
     started = time.perf_counter()
     spark = create_session(staging / "spark-events")
     try:
         buildings = select_buildings(
-            geometry_frame(spark.read.parquet(str(raw / "building.parquet")), config), config
+            geometry_frame(spark.read.parquet(str(raw / "building.parquet")), config),
+            config,
+            boundary.geometry_wkb if boundary else None,
         ).cache()
         parks = geometry_frame(spark.read.parquet(str(raw / "land_use.parquet")), config).cache()
         building_count, park_count = buildings.count(), parks.count()
@@ -48,8 +61,11 @@ def process(config: RunConfig, raw: Path, output: Path) -> Path:
             .withColumn("area_id", F.lit(config.area_id))
             .withColumn("metric_version", F.lit(METRIC_VERSION))
             .withColumn("threshold_m", F.lit(config.threshold_m))
+            .withColumn("selection_version", F.lit(selection_version))
             .cache()
         )
+        for name, value in boundary_columns.items():
+            facts = facts.withColumn(name, F.lit(value).cast("string"))
         with (staging / "plan.txt").open("w", encoding="utf-8") as plan_file:
             with redirect_stdout(plan_file):
                 facts.explain(mode="extended")
@@ -59,7 +75,14 @@ def process(config: RunConfig, raw: Path, output: Path) -> Path:
             raise ValueError("Output cardinality differs from selected buildings")
         facts.write.mode("errorifexists").parquet(str(staging / "building_proximity"))
         grid = (
-            facts.groupBy("source_release", "area_id", "metric_version", "grid_id")
+            facts.groupBy(
+                "source_release",
+                "area_id",
+                "metric_version",
+                "selection_version",
+                *boundary_columns,
+                "grid_id",
+            )
             .agg(
                 F.count("*").alias("mapped_buildings"),
                 F.sum(F.col("within_threshold").cast("int")).alias("buildings_within"),
@@ -71,6 +94,12 @@ def process(config: RunConfig, raw: Path, output: Path) -> Path:
             "status": "complete",
             "config": config.as_dict(),
             "metric_version": METRIC_VERSION,
+            "selection": {
+                "version": selection_version,
+                "scope": "pilot_bbox_intersection_boundary" if boundary else "pilot_bbox",
+                "bbox": list(config.bbox),
+                "boundary": boundary.as_dict() if boundary else None,
+            },
             "completed_at_utc": datetime.now(UTC).isoformat(),
             "raw_manifest_sha256": digest(raw / "manifest.json"),
             "input_rows": {k: v["rows"] for k, v in manifest["extracts"].items()},
@@ -104,13 +133,28 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/coimbra_pilot.json"))
     parser.add_argument("--raw-root", type=Path, default=Path("data/raw"))
     parser.add_argument("--output", type=Path, default=Path("artifacts/coimbra-pilot"))
+    parser.add_argument(
+        "--boundary-config",
+        type=Path,
+        help="Optionally intersect the pilot with an already retained, pinned municipality",
+    )
+    parser.add_argument("--boundary-root", type=Path, default=Path("data/boundaries"))
     args = parser.parse_args()
+    if args.boundary_config and args.command == "extract":
+        parser.error("--boundary-config applies to process or run, not extraction")
     config = load_config(args.config)
+    boundary = (
+        load_retained_boundary(load_boundary_spec(args.boundary_config), args.boundary_root)
+        if args.boundary_config
+        else None
+    )
     if args.command in {"extract", "run"}:
         raw = extract(config, args.raw_root)
     else:
         raw = args.raw_root / config.release / config.area_id / config_key(config)
-    result = raw if args.command == "extract" else process(config, raw, args.output)
+    result = (
+        raw if args.command == "extract" else process(config, raw, args.output, boundary=boundary)
+    )
     print(json.dumps({"status": "complete", "path": str(result)}))
 
 

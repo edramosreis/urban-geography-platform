@@ -47,6 +47,24 @@ it never appends duplicates or overwrites an old run. Failures leave an unpublis
 `.staging-*` / `.run-*` directory for diagnosis. Consumers must use a completed
 `manifest.json` or `summary.json`, not discover arbitrary staging files.
 
+An optional municipality filter intersects the pilot rectangle with a pinned
+DGT boundary. Acquire that small boundary explicitly, then process retained inputs:
+
+```sh
+docker compose run --rm pipeline python scripts/acquire_boundary.py
+docker compose run --rm pipeline urban-geo process --boundary-config configs/coimbra_boundary.json --output artifacts/coimbra-boundary-pilot
+```
+
+Boundary acquisition is capped at 4 MiB. Processing loads and validates local
+boundary files without downloading them. Selection includes polygon edges,
+excludes hole interiors, and preserves full building and park geometry. Park
+candidates retain the existing distance halo. Results describe the configured
+pilot rectangle intersected with the municipality. Facts and grid totals record
+`selection_version`, `boundary_id`, `boundary_release` and
+`boundary_geometry_sha256`; the summary also records source-file hashes and
+boundary attribution. Runs without the option retain rectangle selection and
+write null boundary fields.
+
 ## Development checks
 
 ```sh
@@ -82,3 +100,8 @@ land-use data are distributed under ODbL; retain upstream `sources` attribution
 and review derived-database obligations before redistributing datasets.
 See [Overture attribution and licensing](https://docs.overturemaps.org/attribution/).
 Raw extracts and analytical output datasets are not included in this repository.
+
+DGT CAOP boundaries use [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
+Required attribution: “Informação geográfica cedida pela Direção-Geral do Território”.
+The acquisition retains the official metadata and licence evidence alongside the
+boundary. See [DGT CAOP](https://www.dgterritorio.gov.pt/atividades/cartografia/cartografia-tematica/caop).
