@@ -6,10 +6,21 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from requests.structures import CaseInsensitiveDict
+
+OVERTURE_HOSTS = frozenset(
+    {
+        "stac.overturemaps.org",
+        "overturemaps-us-west-2.s3.amazonaws.com",
+        "overturemaps-us-west-2.s3.us-west-2.amazonaws.com",
+    }
+)
 
 
 class DownloadBudget:
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, *, allowed_hosts: frozenset[str] | None = None) -> None:
+        self.allowed_hosts = OVERTURE_HOSTS if allowed_hosts is None else allowed_hosts
+        self.last_response_headers: CaseInsensitiveDict[str] = CaseInsensitiveDict()
         self.limit = limit
         self.transferred = 0
         self.session = requests.Session()
@@ -21,11 +32,7 @@ class DownloadBudget:
         if start is not None and (start < 0 or length is None or length <= 0):
             raise ValueError("Range must be nonnegative with positive length")
         parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname not in {
-            "stac.overturemaps.org",
-            "overturemaps-us-west-2.s3.amazonaws.com",
-            "overturemaps-us-west-2.s3.us-west-2.amazonaws.com",
-        }:
+        if parsed.scheme != "https" or parsed.hostname not in self.allowed_hosts:
             raise ValueError(f"Unsupported source host: {parsed.hostname}")
         remaining = self.limit - self.transferred
         if remaining <= 0 or (length is not None and length > remaining):
@@ -57,6 +64,7 @@ class DownloadBudget:
                 result.extend(chunk)
             if length is not None and len(result) != length:
                 raise ValueError("Truncated range response")
+            self.last_response_headers = CaseInsensitiveDict(response.headers)
             return bytes(result)
 
 

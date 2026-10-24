@@ -69,3 +69,18 @@ def test_range_reader_seeks_and_handles_eof():
 def test_rejects_untrusted_source_url():
     with pytest.raises(ValueError, match="Unsupported"):
         DownloadBudget(100).get("http://example.com/file")
+
+
+def test_explicit_source_hosts_replace_the_default_overture_scope():
+    budget = DownloadBudget(100, allowed_hosts=frozenset({"ogcapi.dgterritorio.gov.pt"}))
+    response(budget, 200, {"Content-Crs": "<CRS84>", "Content-Length": "2"}, [b"{}"])
+
+    assert budget.get("https://ogcapi.dgterritorio.gov.pt/collections") == b"{}"
+    assert budget.last_response_headers["content-crs"] == "<CRS84>"
+    with pytest.raises(ValueError, match="Unsupported"):
+        budget.get(URL)
+
+
+def test_empty_host_scope_does_not_reenable_default_hosts():
+    with pytest.raises(ValueError, match="Unsupported"):
+        DownloadBudget(100, allowed_hosts=frozenset()).get(URL)
