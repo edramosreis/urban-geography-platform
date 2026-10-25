@@ -1,5 +1,6 @@
 """Publish one verified processing run per local Iceberg fact table; exact replay is read-only."""
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -201,3 +202,29 @@ def publish_facts(
         "source_run_sha256": run.summary_sha256,
         "readback_matches": True,
     }
+
+
+def analysis_definition(run: CompletedRun) -> dict[str, Any]:
+    """Identify comparable analyses independently of source-release and retrieval time."""
+    config = run.summary["config"]
+    selection = run.summary["selection"]
+    boundary = selection["boundary"]
+    return {
+        "contract_version": 1,
+        "area_id": config["area_id"],
+        "bbox": [float(value) for value in config["bbox"]],
+        "metric_crs": config["metric_crs"],
+        "threshold_m": float(config["threshold_m"]),
+        "metric_version": run.summary["metric_version"],
+        "selection_version": selection["version"],
+        "boundary": (
+            {key: boundary[key] for key in ("area_id", "source_release", "geometry_sha256")}
+            if boundary
+            else None
+        ),
+    }
+
+
+def analysis_sha256(run: CompletedRun) -> str:
+    canonical = json.dumps(analysis_definition(run), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
