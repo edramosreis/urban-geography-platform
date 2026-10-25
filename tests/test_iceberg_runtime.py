@@ -20,7 +20,7 @@ def test_local_v2_catalog_snapshots_wkb_and_session_reopen(tmp_path):
         expected_row = first.select("geometry_wkb").first()
         assert expected_row is not None
         expected_wkb = bytes(expected_row.geometry_wkb)
-        first.writeTo(table).using("iceberg").partitionedBy("source_release").create()
+        first.writeTo(table).using("iceberg").partitionedBy(F.col("source_release")).create()
         properties = {
             row.key: row.value for row in spark.sql(f"SHOW TBLPROPERTIES {table}").collect()
         }
