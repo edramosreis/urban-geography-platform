@@ -85,13 +85,38 @@ every stored row with the input, and prints the snapshot ID. The source summary,
 including boundary attribution, is retained in table metadata; its hash is also
 recorded in the snapshot. Spark event logs go to ignored `artifacts/iceberg-events/`.
 
-Each table currently accepts one completed run. Repeating the same input validates
+The first-snapshot publisher accepts one completed run per table. Repeating the input validates
 the existing rows and returns `reused` without creating a snapshot. A different run
 is refused; use a deliberately chosen new `--table-name` for an isolated import.
-Release replacement, schema evolution and multi-writer workflows are subsequent
-increments. Grid outputs remain in the reference processing run's Parquet files.
+Release history uses the separate command below. Schema evolution and multi-writer
+workflows are subsequent increments. Grid outputs remain in the reference processing
+run's Parquet files.
 The local filesystem catalog provides a single-writer demonstration; AWS catalog
 and query-engine compatibility require separate validation.
+
+### Release history
+
+Publish comparable releases to a separate history table:
+
+```sh
+docker compose run --rm pipeline python scripts/publish_release.py --run artifacts/coimbra-boundary-pilot
+```
+
+The default table is `local.analytics.building_proximity_history`. Each history
+table fixes the study area, boundary and metric definition; source releases occupy
+separate release/area partitions. A new release is published as another partition.
+A different run for an existing release requires `--replace` together with
+`--expected-snapshot-id` set to the table's current snapshot ID. Replacement uses
+an explicit release/area filter and preserves other release partitions. Older
+snapshots remain readable. Replaying the same input reuses the current partition,
+including a retry after a successful replacement with its original expected ID.
+
+History rows include `source_run_sha256`; each write commits the full source summary
+and its hash in the same snapshot as the data. This preserves per-release source
+and attribution evidence without a separately updated ledger. The original
+one-run table and reference Parquet outputs remain available. Use a new table name
+when changing the analysis definition. The acceptance tests use tiny synthetic
+releases; publication does not fetch new source data.
 
 ## Development checks
 

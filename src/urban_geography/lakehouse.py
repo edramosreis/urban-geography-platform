@@ -1,4 +1,4 @@
-"""Publish one verified processing run per local Iceberg fact table; exact replay is read-only."""
+"""Validate processed facts and publish local Iceberg snapshots and release history."""
 
 import hashlib
 import json
@@ -228,3 +228,155 @@ def analysis_definition(run: CompletedRun) -> dict[str, Any]:
 def analysis_sha256(run: CompletedRun) -> str:
     canonical = json.dumps(analysis_definition(run), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+HISTORY_CONTRACT = "building_proximity_releases_v1"
+HISTORY_TYPES = FACT_TYPES | {"source_run_sha256": "string"}
+
+
+def _same_history_rows(left: DataFrame, right: DataFrame, message: str) -> None:
+    if left.exceptAll(right).limit(1).count() or right.exceptAll(left).limit(1).count():
+        raise ValueError(message)
+
+
+def publish_release(
+    spark: SparkSession,
+    run: CompletedRun,
+    *,
+    table_name: str = "building_proximity_history",
+    replace: bool = False,
+    expected_snapshot_id: int | None = None,
+) -> dict[str, Any]:
+    """Publish or explicitly replace one release/area in a comparable-analysis table."""
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", table_name):
+        raise ValueError("Iceberg table_name must be a safe lowercase identifier")
+    if replace and expected_snapshot_id is None:
+        raise ValueError("Replacement requires an expected_snapshot_id")
+    if expected_snapshot_id is not None and expected_snapshot_id <= 0:
+        raise ValueError("expected_snapshot_id must be positive")
+    table = "local.analytics." + table_name
+    facts = spark.read.parquet(str(run.path / "building_proximity"))
+    total = _validate_facts(facts, run.summary)
+    incoming = facts.select(*FACT_TYPES).withColumn("source_run_sha256", F.lit(run.summary_sha256))
+    definition = json.dumps(analysis_definition(run), sort_keys=True, separators=(",", ":"))
+    definition_hash = analysis_sha256(run)
+    summary_json = json.dumps(run.summary, sort_keys=True)
+    config = run.summary["config"]
+    scope = (F.col("source_release") == config["release"]) & (F.col("area_id") == config["area_id"])
+    exists = spark.catalog.tableExists(table)
+    base: int | None = None
+    before: DataFrame | None = None
+    status = "created"
+    if exists:
+        metadata = _table_metadata(spark, table)
+        properties = metadata["properties"]
+        if (
+            metadata["format-version"] != 2
+            or properties.get("release-history-contract") != HISTORY_CONTRACT
+        ):
+            raise ValueError("Target is not a supported release-history table")
+        if (
+            properties.get("analysis-sha256") != definition_hash
+            or properties.get("analysis-definition") != definition
+        ):
+            raise ValueError("Analysis definition differs; use a separate history table")
+        spec = next(
+            spec
+            for spec in metadata["partition-specs"]
+            if spec["spec-id"] == metadata["default-spec-id"]
+        )
+        if [(field["name"], field["transform"]) for field in spec["fields"]] != [
+            ("source_release", "identity"),
+            ("area_id", "identity"),
+        ]:
+            raise ValueError("History partition layout differs from the supported contract")
+        base = int(metadata["current-snapshot-id"])
+        before = spark.read.option("snapshot-id", str(base)).table(table)
+        if {field.name: field.dataType.simpleString() for field in before.schema} != HISTORY_TYPES:
+            raise ValueError("History fact schema differs from the supported contract")
+        before = before.select(*HISTORY_TYPES)
+        target = before.filter(scope)
+        target_count = target.count()
+        if target_count:
+            if (
+                not target.filter(~F.col("source_run_sha256").eqNullSafe(F.lit(run.summary_sha256)))
+                .limit(1)
+                .count()
+            ):
+                _same_history_rows(target, incoming, "Stored release differs from its source run")
+                provenance = spark.table(table + ".snapshots").filter(
+                    (F.col("summary")["source-run-sha256"] == run.summary_sha256)
+                    & (F.col("summary")["source-run-summary"] == summary_json)
+                )
+                if not provenance.limit(1).count():
+                    raise ValueError("Stored release has no retained source provenance")
+                status = "reused"
+            elif not replace:
+                raise ValueError(
+                    "Release already contains a different run; replacement must be explicit"
+                )
+            else:
+                status = "replaced"
+        else:
+            if replace:
+                raise ValueError("Cannot replace a missing release partition")
+            status = "published"
+        # A retry after a successful commit is already complete, even with its old expected ID.
+        if status != "reused" and expected_snapshot_id is not None and base != expected_snapshot_id:
+            raise ValueError(
+                "Current snapshot differs from expected_snapshot_id; inspect before retrying"
+            )
+    elif replace or expected_snapshot_id is not None:
+        raise ValueError("Cannot replace or expect a snapshot in a missing history table")
+
+    if status != "reused":
+        writer = (
+            incoming.writeTo(table)
+            .using("iceberg")
+            .option("snapshot-property.source-run-sha256", run.summary_sha256)
+            .option("snapshot-property.source-run-summary", summary_json)
+            .option("snapshot-property.source-release", config["release"])
+            .option("snapshot-property.area-id", config["area_id"])
+            .option("snapshot-property.analysis-sha256", definition_hash)
+        )
+        if exists:
+            # Explicit filter and conflict validation prevent a whole-table overwrite.
+            writer.option("isolation-level", "serializable").option(
+                "validate-from-snapshot-id", str(base)
+            ).overwrite(scope)
+        else:
+            spark.sql("CREATE NAMESPACE IF NOT EXISTS local.analytics")
+            (
+                writer.partitionedBy(F.col("source_release"), F.col("area_id"))
+                .tableProperty("format-version", "2")
+                .tableProperty("release-history-contract", HISTORY_CONTRACT)
+                .tableProperty("analysis-sha256", definition_hash)
+                .tableProperty("analysis-definition", definition)
+                .create()
+            )
+    current = spark.table(table + ".refs").filter("name = 'main'").select("snapshot_id").first()
+    if current is None:
+        raise ValueError("History table has no current snapshot")
+    after = (
+        spark.read.option("snapshot-id", str(current.snapshot_id))
+        .table(table)
+        .select(*HISTORY_TYPES)
+    )
+    _same_history_rows(after.filter(scope), incoming, "Published release readback differs")
+    if before is not None:
+        _same_history_rows(
+            before.filter(~scope), after.filter(~scope), "Unrelated release partitions changed"
+        )
+    return {
+        "status": status,
+        "table": table,
+        "format_version": 2,
+        "snapshot_id": current.snapshot_id,
+        "previous_snapshot_id": base,
+        "source_release": config["release"],
+        "area_id": config["area_id"],
+        "rows_in_release": total,
+        "source_run_sha256": run.summary_sha256,
+        "analysis_sha256": definition_hash,
+        "readback_matches": True,
+    }
