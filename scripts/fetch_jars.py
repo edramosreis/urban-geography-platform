@@ -1,10 +1,15 @@
-"""Fetch the pinned Sedona runtime at image build time, never during a job."""
+"""Fetch pinned Sedona and Iceberg runtimes at image build time, never during a job."""
 
 import hashlib
 from pathlib import Path
 from urllib.request import urlopen
 
 JARS = [
+    (
+        "org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.10.2/"
+        "iceberg-spark-runtime-3.5_2.12-1.10.2.jar",
+        "c562d482dcd16b666e808b755469fbc4b2604284b41622c9d87e2c02b7cc6c5f",
+    ),
     (
         "org/apache/sedona/sedona-spark-shaded-3.5_2.12/1.8.0/"
         "sedona-spark-shaded-3.5_2.12-1.8.0.jar",
@@ -17,7 +22,7 @@ JARS = [
 ]
 
 if __name__ == "__main__":
-    destination = Path("/opt/sedona-jars")
+    destination = Path("/opt/spark-jars")
     destination.mkdir(exist_ok=True)
     for artifact, expected in JARS:
         url = "https://repo.maven.apache.org/maven2/" + artifact
