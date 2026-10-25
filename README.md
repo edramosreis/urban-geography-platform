@@ -65,6 +65,34 @@ pilot rectangle intersected with the municipality. Facts and grid totals record
 boundary attribution. Runs without the option retain rectangle selection and
 write null boundary fields.
 
+## Local Iceberg
+
+The image pins Iceberg 1.10.2 for Spark 3.5 / Scala 2.12. Rebuild the image after
+updating the runtime; all JARs are downloaded and checksum-checked at build time.
+The table format is explicitly v2, independently of the runtime library version.
+
+Publish a completed processing run as the first local building-fact snapshot:
+
+```sh
+docker compose run --rm pipeline python scripts/publish_iceberg.py --run artifacts/coimbra-boundary-pilot
+```
+
+This creates `local.analytics.building_proximity` in a filesystem Hadoop catalog
+under ignored `data/lakehouse/`, partitioned by source release and area. It stores
+the fact rows in Parquet and uses Iceberg metadata to track the committed snapshot.
+The command verifies the input file inventory and hashes, validates facts, compares
+every stored row with the input, and prints the snapshot ID. The source summary,
+including boundary attribution, is retained in table metadata; its hash is also
+recorded in the snapshot. Spark event logs go to ignored `artifacts/iceberg-events/`.
+
+Each table currently accepts one completed run. Repeating the same input validates
+the existing rows and returns `reused` without creating a snapshot. A different run
+is refused; use a deliberately chosen new `--table-name` for an isolated import.
+Release replacement, schema evolution and multi-writer workflows are subsequent
+increments. Grid outputs remain in the reference processing run's Parquet files.
+The local filesystem catalog provides a single-writer demonstration; AWS catalog
+and query-engine compatibility require separate validation.
+
 ## Development checks
 
 ```sh
@@ -74,7 +102,7 @@ docker compose run --rm pipeline mypy
 docker compose run --rm pipeline pytest -q
 ```
 
-Tests include offline Spark/Sedona integration and an independent Shapely/PROJ
+Tests include offline Spark/Sedona/Iceberg integration and an independent Shapely/PROJ
 oracle. CI defines the same checks and never fetches real source data or deploys
 resources. Dependency changes require `docker compose run --rm pipeline uv lock`
 and a rebuild. The Python lock and JAR SHA256 digests are pinned; OS package
@@ -90,8 +118,8 @@ The current image targets Linux amd64.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
-The current implementation is a local Spark/Sedona pipeline that writes Parquet.
-Iceberg, dbt, orchestration and AWS deployment are future work.
+The processing pipeline writes reference Parquet outputs, with an optional local
+Iceberg v2 fact publication step. dbt, orchestration and AWS deployment are future work.
 
 ## Data attribution
 

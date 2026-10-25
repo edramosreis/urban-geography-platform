@@ -1,0 +1,203 @@
+"""Publish one verified processing run per local Iceberg fact table; exact replay is read-only."""
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
+
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+
+from urban_geography.config import RunConfig
+from urban_geography.ingest import digest
+from urban_geography.transform import METRIC_VERSION
+
+FACT_TYPES = {
+    "building_id": "string",
+    "park_id": "string",
+    "distance_m": "double",
+    "within_threshold": "boolean",
+    "grid_id": "string",
+    "source_release": "string",
+    "area_id": "string",
+    "metric_version": "string",
+    "threshold_m": "double",
+    "selection_version": "string",
+    "boundary_id": "string",
+    "boundary_release": "string",
+    "boundary_geometry_sha256": "string",
+}
+
+
+@dataclass(frozen=True)
+class CompletedRun:
+    path: Path
+    summary: dict[str, Any]
+    summary_sha256: str
+
+
+def load_completed_run(path: Path) -> CompletedRun:
+    """Check completion, explicit selection lineage and every Parquet hash before Spark."""
+    summary_path = path / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if summary.get("status") != "complete" or summary.get("metric_version") != METRIC_VERSION:
+        raise ValueError("Iceberg publication requires a completed supported processing run")
+    values = dict(summary["config"])
+    values["bbox"] = tuple(values["bbox"])
+    config = RunConfig(**values)
+    selection = summary.get("selection", {})
+    boundary = selection.get("boundary")
+    expected_version = (
+        "point_on_surface_bbox_boundary_v1" if boundary else "point_on_surface_bbox_v1"
+    )
+    expected_scope = "pilot_bbox_intersection_boundary" if boundary else "pilot_bbox"
+    if (
+        selection.get("version") != expected_version
+        or selection.get("scope") != expected_scope
+        or selection.get("bbox") != list(config.bbox)
+    ):
+        raise ValueError("Processing run requires explicit, consistent selection lineage")
+    if boundary and not all(
+        isinstance(boundary.get(key), str) and boundary[key]
+        for key in (
+            "area_id",
+            "source_release",
+            "geometry_sha256",
+            "manifest_sha256",
+            "attribution",
+        )
+    ):
+        raise ValueError("Processing boundary lineage is incomplete")
+    files = summary.get("files", {})
+    if not isinstance(files, dict) or not files:
+        raise ValueError("Processing run has no Parquet file inventory")
+    root = path.resolve()
+    for relative in files:
+        if not isinstance(relative, str) or not (root / relative).resolve().is_relative_to(root):
+            raise ValueError("Processing file path escapes the run directory")
+    actual = {p.relative_to(path).as_posix() for p in path.rglob("*.parquet")}
+    if set(files) != actual or not any(p.startswith("building_proximity/") for p in actual):
+        raise ValueError("Processing Parquet file inventory differs")
+    for relative, expected in files.items():
+        if digest(path / relative) != expected:
+            raise ValueError(f"Processing file checksum differs: {relative}")
+    return CompletedRun(path, summary, digest(summary_path))
+
+
+def _validate_facts(facts: DataFrame, summary: dict[str, Any]) -> int:
+    if {field.name: field.dataType.simpleString() for field in facts.schema} != FACT_TYPES:
+        raise ValueError("Processing fact schema differs from the supported contract")
+    config = summary["config"]
+    total = facts.count()
+    if not 0 < total <= config["max_features"] or total != summary["mapped_buildings"]:
+        raise ValueError("Processing fact count differs or exceeds the pilot limit")
+    if facts.select("building_id").distinct().count() != total:
+        raise ValueError("Duplicate processing building IDs")
+    matched = F.col("within_threshold")
+    distance = F.col("distance_m")
+    park = F.col("park_id")
+    bad = (
+        F.col("building_id").isNull()
+        | (F.col("building_id") == "")
+        | F.col("grid_id").isNull()
+        | (F.col("grid_id") == "")
+        | matched.isNull()
+        | (
+            matched
+            & (
+                park.isNull()
+                | (park == "")
+                | distance.isNull()
+                | F.isnan(distance)
+                | (distance < 0)
+                | (distance > config["threshold_m"])
+            )
+        )
+        | (~matched & (park.isNotNull() | distance.isNotNull()))
+    )
+    selection = summary["selection"]
+    boundary = selection["boundary"] or {}
+    expected = {
+        "source_release": config["release"],
+        "area_id": config["area_id"],
+        "metric_version": summary["metric_version"],
+        "threshold_m": config["threshold_m"],
+        "selection_version": selection["version"],
+        "boundary_id": boundary.get("area_id"),
+        "boundary_release": boundary.get("source_release"),
+        "boundary_geometry_sha256": boundary.get("geometry_sha256"),
+    }
+    for name, value in expected.items():
+        bad = bad | ~F.col(name).eqNullSafe(F.lit(value))
+    if facts.filter(bad).limit(1).count():
+        raise ValueError("Processing facts disagree with metric or source metadata")
+    count_key = "buildings_within_500m" if config["threshold_m"] == 500 else "buildings_within"
+    if facts.filter(matched).count() != summary[count_key]:
+        raise ValueError("Processing matched count disagrees with the summary")
+    return total
+
+
+def _table_metadata(spark: SparkSession, table: str) -> dict[str, Any]:
+    # SHOW TBLPROPERTIES is a redacted display, not a lossless metadata API.
+    entry = (
+        spark.table(table + ".metadata_log_entries")
+        .orderBy(F.col("timestamp").desc())
+        .select("file")
+        .first()
+    )
+    if entry is None:
+        raise ValueError("Iceberg table has no committed metadata")
+    location = urlparse(entry.file)
+    if location.scheme != "file" or location.netloc:
+        raise ValueError("This publisher supports a local filesystem catalog only")
+    return json.loads(Path(unquote(location.path)).read_text(encoding="utf-8"))
+
+
+def publish_facts(
+    spark: SparkSession, run: CompletedRun, *, table_name: str = "building_proximity"
+) -> dict[str, Any]:
+    """Create one v2 fact table or verify an exact replay; never append or replace here."""
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", table_name):
+        raise ValueError("Iceberg table_name must be a safe lowercase identifier")
+    table = "local.analytics." + table_name
+    facts = spark.read.parquet(str(run.path / "building_proximity"))
+    total = _validate_facts(facts, run.summary)
+    facts = facts.select(*FACT_TYPES)
+    exists = spark.catalog.tableExists(table)
+    if not exists:
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS local.analytics")
+        (
+            facts.writeTo(table)
+            .using("iceberg")
+            .partitionedBy(F.col("source_release"), F.col("area_id"))
+            .tableProperty("format-version", "2")
+            .tableProperty("source-run-sha256", run.summary_sha256)
+            .tableProperty("source-run-summary", json.dumps(run.summary, sort_keys=True))
+            .option("snapshot-property.source-run-sha256", run.summary_sha256)
+            .create()
+        )
+    metadata = _table_metadata(spark, table)
+    properties = metadata["properties"]
+    if metadata["format-version"] != 2 or properties.get("source-run-sha256") != run.summary_sha256:
+        raise ValueError(
+            "Iceberg table already contains a different run; replacement is not enabled"
+        )
+    if properties.get("source-run-summary") != json.dumps(run.summary, sort_keys=True):
+        raise ValueError("Iceberg source summary provenance differs")
+    stored = spark.table(table).select(*FACT_TYPES)
+    if facts.exceptAll(stored).limit(1).count() or stored.exceptAll(facts).limit(1).count():
+        raise ValueError("Iceberg readback differs from the verified processing facts")
+    current = spark.table(table + ".refs").filter("name = 'main'").select("snapshot_id").first()
+    if current is None:
+        raise ValueError("Iceberg table has no current snapshot")
+    return {
+        "status": "reused" if exists else "created",
+        "table": table,
+        "format_version": 2,
+        "snapshot_id": current.snapshot_id,
+        "rows": total,
+        "source_run_sha256": run.summary_sha256,
+        "readback_matches": True,
+    }
