@@ -10,8 +10,15 @@ from urllib.parse import unquote, urlparse
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.types import TimestampType
 
 from urban_geography.config import RunConfig
+from urban_geography.history_schema import (
+    PROCESSING_TIME,
+    processing_time,
+    source_has_processing_time,
+    source_snapshot,
+)
 from urban_geography.ingest import digest
 from urban_geography.transform import METRIC_VERSION
 
@@ -234,6 +241,63 @@ HISTORY_CONTRACT = "building_proximity_releases_v1"
 HISTORY_TYPES = FACT_TYPES | {"source_run_sha256": "string"}
 
 
+def _history_table_contract(metadata: dict[str, Any]) -> None:
+    if (
+        metadata["format-version"] != 2
+        or metadata["properties"].get("release-history-contract") != HISTORY_CONTRACT
+    ):
+        raise ValueError("Target is not a supported release-history table")
+    spec = next(
+        (
+            item
+            for item in metadata["partition-specs"]
+            if item["spec-id"] == metadata["default-spec-id"]
+        ),
+        None,
+    )
+    if spec is None or [(field["name"], field["transform"]) for field in spec["fields"]] != [
+        ("source_release", "identity"),
+        ("area_id", "identity"),
+    ]:
+        raise ValueError("History partition layout differs from the supported contract")
+
+
+def _schema_fields(metadata: dict[str, Any]) -> dict[str, Any]:
+    for schema in metadata["schemas"]:
+        if schema["schema-id"] == metadata["current-schema-id"]:
+            fields = {field["name"]: field for field in schema["fields"]}
+            if len(fields) != len(schema["fields"]):
+                raise ValueError("Duplicate history schema field names")
+            return fields
+    raise ValueError("Current history schema is unavailable")
+
+
+def _history_types(metadata: dict[str, Any]) -> dict[str, str]:
+    fields = _schema_fields(metadata)
+    expected = HISTORY_TYPES
+    if PROCESSING_TIME in fields:
+        if fields[PROCESSING_TIME]["type"] != "timestamptz" or fields[PROCESSING_TIME]["required"]:
+            raise ValueError("processed_at_utc must be a nullable UTC timestamp")
+        expected = HISTORY_TYPES | {PROCESSING_TIME: "timestamp"}
+    actual = {
+        name: ("timestamp" if name == PROCESSING_TIME else field["type"])
+        for name, field in fields.items()
+    }
+    if actual != expected:
+        raise ValueError("History fact schema differs from the supported contract")
+    return expected
+
+
+def _history_frame(frame: DataFrame, types: dict[str, str]) -> DataFrame:
+    actual = {field.name: field.dataType.simpleString() for field in frame.schema}
+    if PROCESSING_TIME in types and actual == HISTORY_TYPES:
+        frame = frame.withColumn(PROCESSING_TIME, F.lit(None).cast(TimestampType()))
+        actual = actual | {PROCESSING_TIME: "timestamp"}
+    if actual != types:
+        raise ValueError("History fact schema differs from the supported contract")
+    return frame.select(*types)
+
+
 def _same_history_rows(left: DataFrame, right: DataFrame, message: str) -> None:
     if left.exceptAll(right).limit(1).count() or right.exceptAll(left).limit(1).count():
         raise ValueError(message)
@@ -267,34 +331,19 @@ def publish_release(
     base: int | None = None
     before: DataFrame | None = None
     status = "created"
+    types = HISTORY_TYPES
     if exists:
         metadata = _table_metadata(spark, table)
         properties = metadata["properties"]
-        if (
-            metadata["format-version"] != 2
-            or properties.get("release-history-contract") != HISTORY_CONTRACT
-        ):
-            raise ValueError("Target is not a supported release-history table")
+        _history_table_contract(metadata)
         if (
             properties.get("analysis-sha256") != definition_hash
             or properties.get("analysis-definition") != definition
         ):
             raise ValueError("Analysis definition differs; use a separate history table")
-        spec = next(
-            spec
-            for spec in metadata["partition-specs"]
-            if spec["spec-id"] == metadata["default-spec-id"]
-        )
-        if [(field["name"], field["transform"]) for field in spec["fields"]] != [
-            ("source_release", "identity"),
-            ("area_id", "identity"),
-        ]:
-            raise ValueError("History partition layout differs from the supported contract")
+        types = _history_types(metadata)
         base = int(metadata["current-snapshot-id"])
-        before = spark.read.option("snapshot-id", str(base)).table(table)
-        if {field.name: field.dataType.simpleString() for field in before.schema} != HISTORY_TYPES:
-            raise ValueError("History fact schema differs from the supported contract")
-        before = before.select(*HISTORY_TYPES)
+        before = _history_frame(spark.read.option("snapshot-id", str(base)).table(table), types)
         target = before.filter(scope)
         target_count = target.count()
         if target_count:
@@ -303,13 +352,17 @@ def publish_release(
                 .limit(1)
                 .count()
             ):
+                origin = source_snapshot(metadata, base, run.summary_sha256, summary_json)
+                if PROCESSING_TIME in types:
+                    value = (
+                        processing_time(run.summary)
+                        if source_has_processing_time(metadata, origin)
+                        else None
+                    )
+                    incoming = incoming.withColumn(
+                        PROCESSING_TIME, F.lit(value).cast(TimestampType())
+                    )
                 _same_history_rows(target, incoming, "Stored release differs from its source run")
-                provenance = spark.table(table + ".snapshots").filter(
-                    (F.col("summary")["source-run-sha256"] == run.summary_sha256)
-                    & (F.col("summary")["source-run-summary"] == summary_json)
-                )
-                if not provenance.limit(1).count():
-                    raise ValueError("Stored release has no retained source provenance")
                 status = "reused"
             elif not replace:
                 raise ValueError(
@@ -330,6 +383,10 @@ def publish_release(
         raise ValueError("Cannot replace or expect a snapshot in a missing history table")
 
     if status != "reused":
+        if PROCESSING_TIME in types:
+            incoming = incoming.withColumn(
+                PROCESSING_TIME, F.lit(processing_time(run.summary)).cast(TimestampType())
+            )
         writer = (
             incoming.writeTo(table)
             .using("iceberg")
@@ -354,14 +411,12 @@ def publish_release(
                 .tableProperty("analysis-definition", definition)
                 .create()
             )
-    current = spark.table(table + ".refs").filter("name = 'main'").select("snapshot_id").first()
-    if current is None:
+    published_metadata = _table_metadata(spark, table)
+    current_id = published_metadata.get("current-snapshot-id")
+    if current_id is None:
         raise ValueError("History table has no current snapshot")
-    after = (
-        spark.read.option("snapshot-id", str(current.snapshot_id))
-        .table(table)
-        .select(*HISTORY_TYPES)
-    )
+    current_id = int(current_id)
+    after = _history_frame(spark.read.option("snapshot-id", str(current_id)).table(table), types)
     _same_history_rows(after.filter(scope), incoming, "Published release readback differs")
     if before is not None:
         _same_history_rows(
@@ -371,7 +426,8 @@ def publish_release(
         "status": status,
         "table": table,
         "format_version": 2,
-        "snapshot_id": current.snapshot_id,
+        "snapshot_id": current_id,
+        "schema_id": published_metadata["current-schema-id"],
         "previous_snapshot_id": base,
         "source_release": config["release"],
         "area_id": config["area_id"],
@@ -379,4 +435,53 @@ def publish_release(
         "source_run_sha256": run.summary_sha256,
         "analysis_sha256": definition_hash,
         "readback_matches": True,
+    }
+
+
+def evolve_history_schema(
+    spark: SparkSession,
+    *,
+    expected_schema_id: int,
+    table_name: str = "building_proximity_history",
+) -> dict[str, Any]:
+    """Explicitly add nullable processing time without rewriting data or creating a snapshot."""
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", table_name):
+        raise ValueError("Iceberg table_name must be a safe lowercase identifier")
+    if expected_schema_id < 0:
+        raise ValueError("expected_schema_id must be nonnegative")
+    table = "local.analytics." + table_name
+    if not spark.catalog.tableExists(table):
+        raise ValueError("History table does not exist")
+    before = _table_metadata(spark, table)
+    _history_table_contract(before)
+    types = _history_types(before)
+    old_schema = int(before["current-schema-id"])
+    if PROCESSING_TIME in types:
+        status = "reused"
+    else:
+        if old_schema != expected_schema_id:
+            raise ValueError("Current schema differs from expected_schema_id")
+        spark.sql(
+            f"ALTER TABLE {table} ADD COLUMN {PROCESSING_TIME} TIMESTAMP_LTZ "
+            "COMMENT 'Processing completion in UTC, truncated to milliseconds'"
+        )
+        status = "evolved"
+    after = _table_metadata(spark, table)
+    if PROCESSING_TIME not in _history_types(after):
+        raise ValueError("Processing-time column was not added")
+    old_fields, new_fields = _schema_fields(before), _schema_fields(after)
+    if any(new_fields.get(name) != field for name, field in old_fields.items()):
+        raise ValueError("Existing history field identities changed")
+    if after["current-snapshot-id"] != before["current-snapshot-id"]:
+        raise ValueError("Data snapshot changed during schema evolution")
+    return {
+        "status": status,
+        "table": table,
+        "previous_schema_id": old_schema,
+        "schema_id": after["current-schema-id"],
+        "snapshot_id": after["current-snapshot-id"],
+        "column": PROCESSING_TIME,
+        "nullable": True,
+        "snapshot_unchanged": True,
+        "existing_field_ids_preserved": True,
     }

@@ -88,8 +88,8 @@ recorded in the snapshot. Spark event logs go to ignored `artifacts/iceberg-even
 The first-snapshot publisher accepts one completed run per table. Repeating the input validates
 the existing rows and returns `reused` without creating a snapshot. A different run
 is refused; use a deliberately chosen new `--table-name` for an isolated import.
-Release history uses the separate command below. Schema evolution and multi-writer
-workflows are subsequent increments. Grid outputs remain in the reference processing
+Release history uses the separate command below. Multi-writer workflows require
+separate validation. Grid outputs remain in the reference processing
 run's Parquet files.
 The local filesystem catalog provides a single-writer demonstration; AWS catalog
 and query-engine compatibility require separate validation.
@@ -117,6 +117,32 @@ and attribution evidence without a separately updated ledger. The original
 one-run table and reference Parquet outputs remain available. Use a new table name
 when changing the analysis definition. The acceptance tests use tiny synthetic
 releases; publication does not fetch new source data.
+
+### History schema evolution
+
+Explicitly add nullable `processed_at_utc` to an existing history table:
+
+```sh
+docker compose run --rm pipeline python scripts/evolve_history_schema.py --expected-schema-id 0
+```
+
+Use the table's current `schema_id` from the publication receipt (0 for a new base
+history table). This is distinct from its data snapshot ID. The migration commits
+new schema metadata, preserves existing field IDs, and leaves Parquet/manifest
+files and the current data snapshot unchanged. Repeating the completed migration
+returns `reused`, including with its original expected schema ID.
+
+Existing rows read as NULL for this field. New or corrected publications use the
+processing run's `completed_at_utc`, normalized to UTC and truncated to milliseconds.
+This records processing completion, independently of source-release and publication
+time. Replay preserves legacy NULLs using the source write's schema; timestamps
+from newer writes must still match their source metadata exactly.
+
+The publisher supports both the base and extended schemas. New tables start with
+the base schema until explicitly evolved. Unknown columns, incompatible types and
+missing timezone information for a new timestamp-bearing write are rejected.
+There is no automatic schema merge or implicit backfill. Historical SQL snapshot
+reads retain the schema associated with their snapshot.
 
 ## Development checks
 
