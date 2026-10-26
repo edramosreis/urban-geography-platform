@@ -192,7 +192,7 @@ percentages. Unmatched buildings remain in the denominator.
 The runner rejects invalid reporting keys/flags, duplicate release/area/building
 keys, mixed processing runs in a partition and inconsistent analysis metadata.
 It is limited to 40,000 input facts. These are local Spark SQL acceptance models;
-persistent dimensions, Gold tables, dbt and Athena validation are separate work.
+Gold table materialization, dbt and Athena validation are separate work.
 
 ### Release and study-area dimension contracts
 
@@ -206,9 +206,37 @@ competing runs for one release/area or incomparable analyses.
 `dimension_frames` creates temporary Spark relations, and `join_run_dimensions`
 checks unique keys, complete references, matching attributes and unchanged fact
 counts before returning enriched reference facts. These are local contracts and
-join acceptance checks. Persistent dimension tables and their publication are a
-separate increment. The release label date is parsed from the pinned identifier;
-acquisition and processing times remain separate run provenance.
+join acceptance checks used by the publisher below. The release label date is
+parsed from the pinned identifier; acquisition and processing times remain
+separate run provenance.
+
+### Publish a matched dimension pair
+
+```sh
+docker compose run --rm pipeline python scripts/publish_dimensions.py --run artifacts/coimbra-boundary-pilot --run artifacts/coimbra-october-pilot
+```
+
+The publisher pins the current fact-history snapshot once, or accepts an explicit
+`--fact-snapshot-id`. Supplied completed runs must reproduce all base history
+facts in that snapshot. It preflights both dimension registries before writing:
+`local.analytics.dim_releases` and `local.analytics.dim_study_areas`. New keys
+append; conflicting descriptions of existing keys fail. The fact tables stay
+unchanged. `--table-prefix` selects another registry pair.
+
+After verified table readback and joins, it publishes an immutable completion
+manifest under `data/dimension-publications/<publication-sha256>/manifest.json`.
+The receipt prints that directory. `read_dimension_publication` in
+`src/urban_geography/dimension_publication.py` opens the matched fact/dimension
+snapshots recorded there and returns enriched base facts plus both dimensions.
+Use that completed publication for a consistent pair. Registry commits happen
+separately, and direct queries of their latest states can include keys from an
+unfinished attempt. A retry finishes that attempt without duplicating keys;
+exact published retries create no files or snapshots. Older publications remain
+readable while their referenced snapshots/files are retained.
+
+This protocol uses a single writer and local directory rename for completion
+visibility. It does not establish a transaction across tables, multi-writer
+safety, power-loss durability or an S3/cloud publication protocol.
 
 ## Development checks
 
@@ -234,6 +262,7 @@ The current image targets Linux amd64.
 - `scripts/verify_pilot.py`: independent Shapely/PROJ verification and replay comparison.
 - `scripts/compare_releases.py`: bounded QA of comparable retained source releases.
 - `scripts/report_grids.py`: snapshot-pinned local SQL grid/release reporting.
+- `scripts/publish_dimensions.py`: matched persisted dimensions with pinned fact lineage.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
