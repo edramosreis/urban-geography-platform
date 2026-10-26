@@ -144,6 +144,32 @@ missing timezone information for a new timestamp-bearing write are rejected.
 There is no automatic schema merge or implicit backfill. Historical SQL snapshot
 reads retain the schema associated with their snapshot.
 
+### Compare retained real releases
+
+`configs/coimbra_pilot_october.json` pins Overture 2026-10-21.0 with the same pilot
+rectangle, metric and limits as the retained 2026-09-23.1 baseline. Extract once,
+then process, compare and publish from retained inputs:
+
+```sh
+docker compose run --rm pipeline urban-geo extract --config configs/coimbra_pilot_october.json
+docker compose run --rm pipeline urban-geo process --config configs/coimbra_pilot_october.json --boundary-config configs/coimbra_boundary.json --output artifacts/coimbra-october-pilot
+docker compose run --rm pipeline python scripts/compare_releases.py --first-run artifacts/coimbra-boundary-pilot --second-run artifacts/coimbra-october-pilot --output artifacts/coimbra-september-october-comparison.json
+docker compose run --rm pipeline python scripts/publish_release.py --run artifacts/coimbra-october-pilot
+```
+
+Choose new output/report paths for another processing attempt. The comparison is
+bounded local QA using retained Parquet; it does not start Spark or fetch data.
+It verifies input hashes, analysis comparability, fact metadata and IDs. The JSON
+report separates release totals and ID membership from changes among shared IDs:
+500 m match status, nearest park ID, distance and grid assignment. The default
+numerical distance tolerance is 0.0001 m; unmatched distances remain unknown.
+Reports preserve both input-run hashes and refuse an existing output path.
+
+ID appearance/disappearance and proximity differences describe mapped records.
+They do not establish construction, demolition or walking access. Iceberg stores
+each release as a separate observation partition; filter/group by source release
+when querying so observations from different releases are not double-counted.
+
 ## Development checks
 
 ```sh
@@ -166,6 +192,7 @@ The current image targets Linux amd64.
 - `configs/`: versioned study areas and download limits.
 - `tests/`: geometry semantics, transfer limits, pruning, provenance and publication policy.
 - `scripts/verify_pilot.py`: independent Shapely/PROJ verification and replay comparison.
+- `scripts/compare_releases.py`: bounded QA of comparable retained source releases.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
