@@ -194,6 +194,22 @@ keys, mixed processing runs in a partition and inconsistent analysis metadata.
 It is limited to 40,000 input facts. These are local Spark SQL acceptance models;
 persistent dimensions, Gold tables, dbt and Athena validation are separate work.
 
+### Release and study-area dimension contracts
+
+`src/urban_geography/dimensions.py` defines typed release/study-area records from
+validated completed runs. Source release IDs are natural keys; a study-area
+SHA256 versions the pilot rectangle, CRS, selection rule and pinned boundary.
+Source release, proximity threshold and processing/retrieval details do not change
+that area key. The contract retains exact source-run bindings and rejects
+competing runs for one release/area or incomparable analyses.
+
+`dimension_frames` creates temporary Spark relations, and `join_run_dimensions`
+checks unique keys, complete references, matching attributes and unchanged fact
+counts before returning enriched reference facts. These are local contracts and
+join acceptance checks. Persistent dimension tables and their publication are a
+separate increment. The release label date is parsed from the pinned identifier;
+acquisition and processing times remain separate run provenance.
+
 ## Development checks
 
 ```sh
