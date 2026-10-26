@@ -170,6 +170,30 @@ They do not establish construction, demolition or walking access. Iceberg stores
 each release as a separate observation partition; filter/group by source release
 when querying so observations from different releases are not double-counted.
 
+### Query release and grid summaries with SQL
+
+```sh
+docker compose run --rm pipeline python scripts/report_grids.py --output artifacts/gold-grid-report.json
+```
+
+This local acceptance runner starts Spark, pins the current Iceberg history
+snapshot once, and evaluates the SQL models in `src/urban_geography/sql/`. Supply
+`--snapshot-id` to read a retained older snapshot. The report records the snapshot,
+analysis definition, source-run hashes and SQL hashes; an existing output path is
+refused. It creates only temporary session views and a JSON report, with no table
+writes or new Iceberg snapshots.
+
+Grid rows describe occupied cells of the selected pilot building cohort. Empty
+cells are absent, and edge cells describe only selected buildings, not full-cell
+coverage. Each source release is aggregated separately. Release shares divide
+summed matched counts by summed building counts, rather than averaging cell
+percentages. Unmatched buildings remain in the denominator.
+
+The runner rejects invalid reporting keys/flags, duplicate release/area/building
+keys, mixed processing runs in a partition and inconsistent analysis metadata.
+It is limited to 40,000 input facts. These are local Spark SQL acceptance models;
+persistent dimensions, Gold tables, dbt and Athena validation are separate work.
+
 ## Development checks
 
 ```sh
@@ -193,6 +217,7 @@ The current image targets Linux amd64.
 - `tests/`: geometry semantics, transfer limits, pruning, provenance and publication policy.
 - `scripts/verify_pilot.py`: independent Shapely/PROJ verification and replay comparison.
 - `scripts/compare_releases.py`: bounded QA of comparable retained source releases.
+- `scripts/report_grids.py`: snapshot-pinned local SQL grid/release reporting.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
