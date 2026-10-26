@@ -1,0 +1,16 @@
+{
+  "area_id": "coimbra_centre_pilot",
+  "release": "2026-10-21.0",
+  "bbox": [
+    -8.435,
+    40.195,
+    -8.415,
+    40.215
+  ],
+  "metric_crs": "EPSG:3763",
+  "threshold_m": 500.0,
+  "max_download_bytes": 67108864,
+  "max_output_bytes": 16777216,
+  "max_features": 20000,
+  "max_source_files": 12
+}
