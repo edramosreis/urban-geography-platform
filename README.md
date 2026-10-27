@@ -192,7 +192,7 @@ percentages. Unmatched buildings remain in the denominator.
 The runner rejects invalid reporting keys/flags, duplicate release/area/building
 keys, mixed processing runs in a partition and inconsistent analysis metadata.
 It is limited to 40,000 input facts. These are local Spark SQL acceptance models;
-Gold table materialization, dbt and Athena validation are separate work.
+The materializer below saves grid summaries; dbt and Athena validation remain future work.
 
 ### Release and study-area dimension contracts
 
@@ -238,6 +238,34 @@ This protocol uses a single writer and local directory rename for completion
 visibility. It does not establish a transaction across tables, multi-writer
 safety, power-loss durability or an S3/cloud publication protocol.
 
+### Save Gold grid summaries in Iceberg
+
+```sh
+docker compose run --rm pipeline python scripts/publish_gold.py --dimension-publication data/dimension-publications/<publication-sha256>
+```
+
+Use the completed dimension-publication directory printed by the previous step.
+This evaluates the same grid SQL and saves it to
+`local.analytics.gold_grid_proximity`. Each row describes one occupied grid cell
+in one source release and area, within one immutable Gold calculation run.
+Release totals are calculated by the existing release SQL over these saved counts.
+
+The receipt includes `gold_run_sha256` and the Gold table snapshot ID. Always
+select one Gold run: later source/SQL versions append another calculation, which
+can contain summaries for the same source release. The reader
+`read_gold_run` in `src/urban_geography/gold_storage.py` filters the chosen run,
+checks its content hash and returns grid rows, release totals and the full
+analysis definition. It reads the saved Gold table without scanning source
+building or dimension tables. The recorded SQL version must match the installed
+models; retain the matching code version for historical reads.
+
+Rows and source/SQL lineage commit together in one Iceberg snapshot. New runs
+append; exact retries verify and reuse stored results without new table files or
+snapshots. Counts preserve unmatched buildings in the denominator. Table-wide
+storage is limited to 40,000 grid rows, with the existing source limits unchanged.
+This remains a local single-writer v2 table; snapshot/lineage retention and broader
+crash/orphan maintenance are separate work.
+
 ## Development checks
 
 ```sh
@@ -263,6 +291,7 @@ The current image targets Linux amd64.
 - `scripts/compare_releases.py`: bounded QA of comparable retained source releases.
 - `scripts/report_grids.py`: snapshot-pinned local SQL grid/release reporting.
 - `scripts/publish_dimensions.py`: matched persisted dimensions with pinned fact lineage.
+- `scripts/publish_gold.py`: immutable saved grid summaries and source/SQL lineage.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
