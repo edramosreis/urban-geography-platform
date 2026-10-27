@@ -20,6 +20,18 @@ from urban_geography.lakehouse import (
 MAX_REPORT_FACTS = 40_000
 
 
+def load_sql_models() -> dict[str, str]:
+    """Load the same versioned SQL for reports and materialized summaries."""
+    return {
+        name: files("urban_geography").joinpath("sql", name + ".sql").read_text(encoding="utf-8")
+        for name in ("grid_proximity", "release_proximity")
+    }
+
+
+def sql_model_hashes(models: dict[str, str]) -> dict[str, str]:
+    return {name: hashlib.sha256(sql.encode("utf-8")).hexdigest() for name, sql in models.items()}
+
+
 def validate_report_request(table_name: str, snapshot_id: int | None) -> None:
     if not re.fullmatch(r"[a-z][a-z0-9_]*", table_name):
         raise ValueError("History table_name must be a safe lowercase identifier")
@@ -85,10 +97,7 @@ def grid_report(
 
     suffix = uuid.uuid4().hex
     fact_view, grid_view = "gold_facts_" + suffix, "gold_grids_" + suffix
-    models = {
-        name: files("urban_geography").joinpath("sql", name + ".sql").read_text(encoding="utf-8")
-        for name in ("grid_proximity", "release_proximity")
-    }
+    models = load_sql_models()
     try:
         facts.createOrReplaceTempView(fact_view)
         grids = spark.sql(models["grid_proximity"].format(facts=fact_view))
@@ -107,9 +116,7 @@ def grid_report(
         "snapshot_id": int(pinned),
         "analysis_sha256": analysis_hash,
         "analysis_definition": definition,
-        "sql_sha256": {
-            name: hashlib.sha256(sql.encode("utf-8")).hexdigest() for name, sql in models.items()
-        },
+        "sql_sha256": sql_model_hashes(models),
         "input_facts": total,
         "grids": grid_rows,
         "releases": release_rows,
