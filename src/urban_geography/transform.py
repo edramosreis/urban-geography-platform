@@ -1,5 +1,7 @@
 """Spatial SQL semantics shared by the pilot and its independent correctness tests."""
 
+import math
+
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 
@@ -60,6 +62,11 @@ def proximity(buildings: DataFrame, parks: DataFrame, threshold_m: float) -> Dat
         )
         .filter(F.col("distance_m") <= threshold_m)
     )
+    return _proximity_facts(buildings, pairs)
+
+
+def _proximity_facts(buildings: DataFrame, pairs: DataFrame) -> DataFrame:
+    """Shared exact ranking, unmatched-building preservation and grid assignment."""
     rank = Window.partitionBy("building_id").orderBy("distance_m", "park_id")
     nearest = pairs.withColumn("rank", F.row_number().over(rank)).filter("rank = 1").drop("rank")
     coordinates = buildings.select(
@@ -81,3 +88,52 @@ def proximity(buildings: DataFrame, parks: DataFrame, threshold_m: float) -> Dat
         )
         .drop("x_m", "y_m")
     )
+
+
+# Conservative metre padding broadens only the candidate screen, never the exact threshold.
+ENVELOPE_PADDING_M = 1e-6
+
+
+def envelope_candidates(buildings: DataFrame, parks: DataFrame, threshold_m: float) -> DataFrame:
+    """Logical broad phase for projected points and full polygon geometries."""
+    if not math.isfinite(threshold_m) or threshold_m < 0:
+        raise ValueError("Envelope threshold must be finite and nonnegative")
+    reach = threshold_m + ENVELOPE_PADDING_M
+    points = buildings.select(
+        F.col("id").alias("building_id"),
+        "point",
+        F.expr("ST_X(point)").alias("point_x"),
+        F.expr("ST_Y(point)").alias("point_y"),
+    )
+    bounds = parks.select(
+        F.col("id").alias("park_id"),
+        F.col("geom").alias("park_geom"),
+        F.expr("ST_XMin(geom)").alias("min_x"),
+        F.expr("ST_XMax(geom)").alias("max_x"),
+        F.expr("ST_YMin(geom)").alias("min_y"),
+        F.expr("ST_YMax(geom)").alias("max_y"),
+    )
+    screen = (
+        (F.col("point_x") >= F.col("min_x") - reach)
+        & (F.col("point_x") <= F.col("max_x") + reach)
+        & (F.col("point_y") >= F.col("min_y") - reach)
+        & (F.col("point_y") <= F.col("max_y") + reach)
+    )
+    # Catalyst chooses physical predicate ordering; this is not a distance-call counter.
+    return points.join(bounds, screen, "inner").select(
+        "building_id", "park_id", "point", "park_geom"
+    )
+
+
+def proximity_envelope(buildings: DataFrame, parks: DataFrame, threshold_m: float) -> DataFrame:
+    """Conservative envelope candidates followed by the unchanged exact distance test."""
+    pairs = (
+        envelope_candidates(buildings, parks, threshold_m)
+        .select(
+            "building_id",
+            "park_id",
+            F.expr("ST_Distance(point, park_geom)").alias("distance_m"),
+        )
+        .filter(F.col("distance_m") <= threshold_m)
+    )
+    return _proximity_facts(buildings, pairs)
