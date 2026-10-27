@@ -266,6 +266,32 @@ storage is limited to 40,000 grid rows, with the existing source limits unchange
 This remains a local single-writer v2 table; snapshot/lineage retention and broader
 crash/orphan maintenance are separate work.
 
+### Demonstrate the complete retained-data path
+
+```sh
+docker compose run --rm pipeline python scripts/run_local_demo.py --boundary-config configs/coimbra_boundary.json --output artifacts/local-demo-01
+```
+
+This offline demonstration requires both retained raw releases and the pinned
+boundary files. It never downloads inputs. The default source configurations are
+the September and October Coimbra pilots; pass two `--config` options to select
+another already retained comparable pair. The example explicitly includes CAOP
+selection; omitting `--boundary-config` uses the supported bbox-only selection.
+
+Choose a fresh output directory, disjoint from retained input roots and the live
+`data/lakehouse` warehouse. The runner processes each release twice, checks all
+results with the independent Shapely/PROJ verifier and compares repeated fact/grid
+rows. It then builds a separate warehouse containing fact history, the explicit
+nullable schema extension, persisted dimensions and saved Gold summaries.
+
+The demonstration verifies older-snapshot readback, exact publication retries,
+unchanged table/completion files on retry and fresh-session reads. It writes
+`acceptance.json` only after every check passes. Existing output directories are
+refused; failed attempts remain available for inspection. Use a new directory for
+another demonstration. Spark logs and intermediate outputs are kept inside that
+attempt. The final JSON is validation evidence; analytical rows still flow from
+Parquet to Iceberg through the existing publication APIs.
+
 ## Development checks
 
 ```sh
@@ -292,6 +318,7 @@ The current image targets Linux amd64.
 - `scripts/report_grids.py`: snapshot-pinned local SQL grid/release reporting.
 - `scripts/publish_dimensions.py`: matched persisted dimensions with pinned fact lineage.
 - `scripts/publish_gold.py`: immutable saved grid summaries and source/SQL lineage.
+- `scripts/run_local_demo.py`: isolated offline processing-to-Gold demonstration.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
