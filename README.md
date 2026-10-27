@@ -336,6 +336,25 @@ These are single-machine pilot measurements including driver collection. They do
 not establish a speedup or distributed scaling. No source download or Iceberg
 publication occurs.
 
+### Describe the retained workload
+
+```sh
+docker compose run --rm pipeline python scripts/profile_workload.py --boundary-config configs/coimbra_boundary.json --output artifacts/workload-profile-01
+```
+
+This offline command reuses the benchmark's retained-input/reference checks and
+requires a fresh output directory. It describes the same selected cohort: full
+building/park geometry complexity, projected WKB sizes, envelope candidates per
+building and park, occupied grid counts and cached input partition row counts.
+Zero-candidate features and empty input partitions remain in their distributions.
+
+`profile.json` is written after selection and input-hash checks. Geometry WKB
+bytes describe serialized geometry, not Spark heap usage. Logical candidate counts
+are separate from exact matches and actual distance calls. Occupied grids and
+input row partitions do not establish runtime task/shuffle skew. This command
+describes data; its elapsed time is not a comparative performance measurement.
+It neither downloads sources nor writes lakehouse tables.
+
 ## Development checks
 
 ```sh
@@ -364,6 +383,7 @@ The current image targets Linux amd64.
 - `scripts/publish_gold.py`: immutable saved grid summaries and source/SQL lineage.
 - `scripts/run_local_demo.py`: isolated offline processing-to-Gold demonstration.
 - `scripts/benchmark_proximity.py`: retained-pilot baseline trials, equivalence and task metrics.
+- `scripts/profile_workload.py`: bounded geometry, candidate and input-partition descriptions.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
