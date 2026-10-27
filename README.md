@@ -314,6 +314,24 @@ Unavailable metrics remain null; failed or timed-out attempts retain evidence an
 produce no successful timing summary. The default 60-second trial timeout uses
 cooperative Spark cancellation; it is not a hard process deadline.
 
+To compare the current operator with a conservative envelope prefilter:
+
+```sh
+docker compose run --rm pipeline python scripts/benchmark_proximity.py --boundary-config configs/coimbra_boundary.json --compare-envelope --output artifacts/proximity-envelope-01
+```
+
+Both variants use the same projected input caches. Each has its own warmup,
+followed by five rounds containing one measured trial per variant; the order in
+each round is shuffled with a recorded seed (`--order-seed`, default 1729).
+The prefilter keeps points inside each park's metre-expanded bounding rectangle,
+then applies the same exact full-polygon distance and nearest-park rules. It is
+opt-in for measurement; normal processing keeps the existing operator.
+
+The report adds `variant_collect_seconds` and a separate untimed count of logical
+envelope candidate rows. This count does not measure actual distance-function
+calls. The legacy `measured_collect_seconds` field still describes the current
+operator. Any incomplete trial suppresses both variants' timing summaries.
+
 These are single-machine pilot measurements including driver collection. They do
 not establish a speedup or distributed scaling. No source download or Iceberg
 publication occurs.

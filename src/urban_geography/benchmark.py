@@ -1,10 +1,11 @@
-"""Bounded baseline instrumentation of the unchanged pilot proximity operator."""
+"""Bounded pilot measurements with an optional interleaved exact-envelope comparison."""
 
 import io
 import json
 import math
 import os
 import platform
+import random
 import statistics
 import sys
 import time
@@ -28,7 +29,13 @@ from urban_geography.lakehouse import CompletedRun, load_completed_run
 from urban_geography.release_comparison import _records
 from urban_geography.spark import create_session
 from urban_geography.spark_metrics import summarize_event_logs
-from urban_geography.transform import geometry_frame, proximity, select_buildings
+from urban_geography.transform import (
+    envelope_candidates,
+    geometry_frame,
+    proximity,
+    proximity_envelope,
+    select_buildings,
+)
 
 COLUMNS = ("building_id", "park_id", "distance_m", "within_threshold", "grid_id")
 TOLERANCE_M = 1e-6
@@ -231,8 +238,37 @@ def _resource_limits() -> dict[str, Any]:
     return values
 
 
+def trial_schedule(trials: int, compare_envelope: bool, seed: int) -> list[dict[str, Any]]:
+    """One warmup each, then seeded/interleaved rounds over identical cached inputs."""
+    variants = [("baseline", "current_proximity")]
+    if compare_envelope:
+        variants.append(("envelope", "envelope_prefilter"))
+    rng = random.Random(seed)
+    schedule = []
+    for index in range(trials + 1):
+        order = list(variants)
+        if compare_envelope:
+            rng.shuffle(order)
+        for prefix, variant in order:
+            suffix = "warmup" if index == 0 else f"trial-{index:02d}"
+            schedule.append(
+                {
+                    "group": f"{prefix}.{suffix}",
+                    "variant": variant,
+                    "warmup": index == 0,
+                    "round": index,
+                }
+            )
+    return schedule
+
+
 def run_baseline(
-    plan: BaselinePlan, *, trials: int = 5, timeout_seconds: float = 60
+    plan: BaselinePlan,
+    *,
+    trials: int = 5,
+    timeout_seconds: float = 60,
+    compare_envelope: bool = False,
+    order_seed: int = 1729,
 ) -> dict[str, Any]:
     validate_trial_options(trials, timeout_seconds)
     plan.output.mkdir(parents=True, exist_ok=False)
@@ -240,11 +276,11 @@ def run_baseline(
     started = time.perf_counter()
     spark = create_session(events_dir)
     startup_seconds = time.perf_counter() - started
-    groups = [
-        "baseline.prepare",
-        "baseline.warmup",
-        *(f"baseline.trial-{i:02d}" for i in range(1, trials + 1)),
-    ]
+    schedule = trial_schedule(trials, compare_envelope, order_seed)
+    groups = ["baseline.prepare", *(trial["group"] for trial in schedule)]
+    if compare_envelope:
+        groups.append("benchmark.diagnostics")
+    candidate_counts, diagnostic_seconds = None, None
     samples: list[dict[str, Any]] = []
     failure = None
     settings: dict[str, Any] = {}
@@ -283,13 +319,11 @@ def run_baseline(
         preparation_seconds = time.perf_counter() - started
         if building_count != len(plan.expected) or building_count * park_count > 2_000_000:
             raise ValueError("Benchmark selection differs or exceeds the pilot pair limit")
-        for index, group in enumerate(groups[1:]):
-            print(
-                f"Baseline {'warmup' if index == 0 else 'trial ' + str(index)}",
-                file=sys.stderr,
-                flush=True,
-            )
-            frame = proximity(buildings, parks, plan.config.threshold_m).select(*COLUMNS)
+        for trial in schedule:
+            group = trial["group"]
+            print(f"Measuring {group}", file=sys.stderr, flush=True)
+            operator = proximity_envelope if trial["variant"] == "envelope_prefilter" else proximity
+            frame = operator(buildings, parks, plan.config.threshold_m).select(*COLUMNS)
             spark.sparkContext.setJobGroup(group, group, interruptOnCancel=True)
             rows, sample = time_action(
                 partial(_collect, frame),
@@ -299,7 +333,7 @@ def run_baseline(
             # Spark accepts null to clear a property; its pinned Python annotation excludes it.
             spark.sparkContext.setLocalProperty("spark.jobGroup.id", None)  # type: ignore[arg-type]
             spark.sparkContext.setLocalProperty("spark.job.description", None)  # type: ignore[arg-type]
-            sample.update(group=group, warmup=index == 0)
+            sample.update(trial)
             if sample["status"] == "complete" and rows is not None:
                 try:
                     sample["equivalence"] = verify_results(
@@ -318,6 +352,17 @@ def run_baseline(
             if sample["status"] != "complete":
                 failure = f"{group}: {sample['status']}"
                 break
+        if compare_envelope and failure is None and len(samples) == len(schedule):
+            spark.sparkContext.setJobGroup("benchmark.diagnostics", "Untimed candidate row count")
+            started = time.perf_counter()
+            screened = envelope_candidates(buildings, parks, plan.config.threshold_m).count()
+            diagnostic_seconds = time.perf_counter() - started
+            if not 0 <= screened <= building_count * park_count:
+                raise ValueError("Envelope candidate count exceeds the all-pairs upper bound")
+            candidate_counts = {
+                "all_pairs_upper_bound": building_count * park_count,
+                "envelope_candidate_rows": screened,
+            }
     except Exception as error:
         failure = type(error).__name__ + ": " + str(error)[:2000]
     finally:
@@ -329,24 +374,30 @@ def run_baseline(
     unchanged = _hash_paths(plan.inputs) == plan.hashes
     complete = (
         failure is None
-        and len(samples) == trials + 1
+        and len(samples) == len(schedule)
         and all(s["status"] == "complete" for s in samples)
         and unchanged
     )
-    measured = [s["collect_wall_seconds"] for s in samples if not s["warmup"]]
-    timing = (
-        {
-            "median": statistics.median(measured),
-            "min": min(measured),
-            "max": max(measured),
-            "sample_stdev": statistics.stdev(measured),
-        }
-        if complete
-        else None
-    )
+    timings = {}
+    for variant in dict.fromkeys(trial["variant"] for trial in schedule):
+        measured = [
+            s["collect_wall_seconds"]
+            for s in samples
+            if not s["warmup"] and s["variant"] == variant
+        ]
+        timings[variant] = (
+            {
+                "median": statistics.median(measured),
+                "min": min(measured),
+                "max": max(measured),
+                "sample_stdev": statistics.stdev(measured),
+            }
+            if complete
+            else None
+        )
     report = {
         "status": "complete" if complete else "failed",
-        "variant": "current_proximity",
+        "variant": "current_vs_envelope" if compare_envelope else "current_proximity",
         "scope": "single-machine pilot instrumentation; no speedup or scaling conclusion",
         "timed_operation": "proximity calculation plus full driver collection",
         "cache_policy": (
@@ -357,7 +408,13 @@ def run_baseline(
         "preflight_seconds": plan.preflight_seconds,
         "session_startup_seconds": startup_seconds,
         "input_preparation_seconds": preparation_seconds,
-        "measured_collect_seconds": timing,
+        "measured_collect_seconds": timings["current_proximity"],
+        "variant_collect_seconds": timings,
+        "trial_order_seed": order_seed if compare_envelope else None,
+        "scheduled_trials": schedule,
+        "candidate_counts": candidate_counts,
+        "candidate_count_definition": "separate untimed logical candidate rows, not distance calls",
+        "candidate_diagnostic_seconds": diagnostic_seconds,
         "input_hashes": plan.hashes,
         "reference_summary_sha256": plan.reference.summary_sha256,
         "config": plan.config.as_dict(),

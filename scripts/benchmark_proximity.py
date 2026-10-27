@@ -19,6 +19,12 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--trial-timeout", type=float, default=60)
+    parser.add_argument(
+        "--compare-envelope",
+        action="store_true",
+        help="Interleave the current and exact envelope-prefilter variants",
+    )
+    parser.add_argument("--order-seed", type=int, default=1729)
     args = parser.parse_args()
     validate_trial_options(args.trials, args.trial_timeout)
     plan = prepare_baseline(
@@ -29,7 +35,13 @@ def main() -> None:
         boundary_config=args.boundary_config,
         boundary_root=args.boundary_root,
     )
-    report = run_baseline(plan, trials=args.trials, timeout_seconds=args.trial_timeout)
+    report = run_baseline(
+        plan,
+        trials=args.trials,
+        timeout_seconds=args.trial_timeout,
+        compare_envelope=args.compare_envelope,
+        order_seed=args.order_seed,
+    )
     print(json.dumps({"status": report["status"], "report": str(plan.output / "report.json")}))
     if report["status"] != "complete":
         raise SystemExit(1)
