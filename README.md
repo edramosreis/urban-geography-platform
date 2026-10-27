@@ -292,6 +292,32 @@ another demonstration. Spark logs and intermediate outputs are kept inside that
 attempt. The final JSON is validation evidence; analytical rows still flow from
 Parquet to Iceberg through the existing publication APIs.
 
+### Measure the retained pilot proximity baseline
+
+```sh
+docker compose run --rm pipeline python scripts/benchmark_proximity.py --boundary-config configs/coimbra_boundary.json --output artifacts/proximity-baseline-01
+```
+
+This offline command requires the retained October inputs and matching completed
+`artifacts/coimbra-october-pilot` reference. Use `--config`, `--reference-run` and
+`--raw-root` to select another already retained pilot. Boundary selection must
+match the reference. Choose a fresh output directory; inputs and the live warehouse
+are preserved. Existing feature/byte limits and a two-million logical-pair cap apply.
+
+It materializes projected input caches, then runs one warmup and five measured
+trials of the unchanged proximity operator. Each trial collects every result field
+and checks keys, park IDs, match flags, grids and metre distances against the
+reference. Startup and input preparation are reported separately. Results are
+recomputed; JVM/OS caches are not reset. The report retains input hashes, runtime
+settings, per-trial executed plans, Spark event logs and selected task metrics.
+Unavailable metrics remain null; failed or timed-out attempts retain evidence and
+produce no successful timing summary. The default 60-second trial timeout uses
+cooperative Spark cancellation; it is not a hard process deadline.
+
+These are single-machine pilot measurements including driver collection. They do
+not establish a speedup or distributed scaling. No source download or Iceberg
+publication occurs.
+
 ## Development checks
 
 ```sh
@@ -319,6 +345,7 @@ The current image targets Linux amd64.
 - `scripts/publish_dimensions.py`: matched persisted dimensions with pinned fact lineage.
 - `scripts/publish_gold.py`: immutable saved grid summaries and source/SQL lineage.
 - `scripts/run_local_demo.py`: isolated offline processing-to-Gold demonstration.
+- `scripts/benchmark_proximity.py`: retained-pilot baseline trials, equivalence and task metrics.
 - `scripts/check_publication.py`: checks tracked paths and Git history; `--secrets` also
   runs the pinned Gitleaks image against committed history without network access.
 
