@@ -41,6 +41,13 @@ To reprocess retained data without network access, choose a new output directory
 docker compose run --rm pipeline urban-geo process --output artifacts/coimbra-replay
 ```
 
+New processing runs use the exact distance inner join and record
+`processing_implementation: exact_distance_join_v1` in `summary.json`.
+The metric remains `park_proximity_v1`: full-polygon metre distances, the inclusive
+threshold, nearest-park tie-break, unmatched buildings and grid assignment retain
+the same meaning. The original query remains available as the benchmark baseline.
+Older completed runs without the implementation label remain readable.
+
 `urban-geo extract` reuses a completed raw extract only after validating its
 configuration and file hashes. Processing refuses an existing output directory;
 it never appends duplicates or overwrites an old run. Failures leave an unpublished

@@ -19,7 +19,7 @@ from urban_geography.spark import create_session
 from urban_geography.transform import (
     METRIC_VERSION,
     geometry_frame,
-    proximity,
+    proximity_distance_join,
     select_buildings,
 )
 
@@ -54,9 +54,11 @@ def process(
         if not building_count:
             raise ValueError("No building representative points in the analysis area")
         if building_count * park_count > 2_000_000:
-            raise ValueError("Pilot cross join exceeds 2 million pairs; use the M3 spatial join")
+            raise ValueError(
+                "Pilot logical pair budget exceeds 2 million pairs; review the workload limits"
+            )
         facts = (
-            proximity(buildings, parks, config.threshold_m)
+            proximity_distance_join(buildings, parks, config.threshold_m)
             .withColumn("source_release", F.lit(config.release))
             .withColumn("area_id", F.lit(config.area_id))
             .withColumn("metric_version", F.lit(METRIC_VERSION))
@@ -94,6 +96,7 @@ def process(
             "status": "complete",
             "config": config.as_dict(),
             "metric_version": METRIC_VERSION,
+            "processing_implementation": "exact_distance_join_v1",
             "selection": {
                 "version": selection_version,
                 "scope": "pilot_bbox_intersection_boundary" if boundary else "pilot_bbox",

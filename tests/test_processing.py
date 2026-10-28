@@ -74,6 +74,8 @@ def test_cli_publishes_complete_results_and_preserves_existing_run(processing_ca
 
     summary = json.loads((case.output / "summary.json").read_text())
     assert summary["status"] == "complete"
+    assert summary["processing_implementation"] == "exact_distance_join_v1"
+    assert summary["metric_version"] == "park_proximity_v1"
     assert summary["mapped_buildings"] == 2
     assert summary["candidate_parks"] == 1
     assert summary["buildings_within_500m"] == 1
@@ -122,6 +124,7 @@ def test_cli_publishes_complete_results_and_preserves_existing_run(processing_ca
     plan = (case.output / "plan.txt").read_text()
     assert "== Parsed Logical Plan ==" in plan
     assert "== Physical Plan ==" in plan
+    assert "BroadcastIndexJoin" in plan
     event_files = [
         path
         for path in (case.output / "spark-events").iterdir()
@@ -287,6 +290,7 @@ def test_cli_boundary_selection_records_lineage_and_preserves_outside_parks(
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"status": "complete", "path": str(case.output)}
     summary = json.loads((case.output / "summary.json").read_text())
+    assert summary["processing_implementation"] == "exact_distance_join_v1"
     assert summary["mapped_buildings"] == summary["buildings_within_500m"] == 1
     assert summary["candidate_parks"] == 1
     assert summary["share_within"] == 1
