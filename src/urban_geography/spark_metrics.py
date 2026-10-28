@@ -5,6 +5,7 @@ import math
 import statistics
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,12 +36,23 @@ def _value(event: dict[str, Any], path: tuple[str, ...]) -> int | float | None:
     )
 
 
-def summarize_event_logs(paths: Sequence[Path], groups: Sequence[str]) -> dict[str, dict[str, Any]]:
-    """Keep missing metrics unavailable and attribute tasks using event order."""
+@dataclass(frozen=True)
+class TaskLog:
+    tasks: dict[str, list[dict[str, Any]]]
+    applications: list[str | None]
+    stages: dict[tuple[int, int], dict[str, Any]]
+    versions: list[str | None]
+
+
+def read_task_log(paths: Sequence[Path], groups: Sequence[str]) -> TaskLog:
+    """Read bounded Spark 3.5.6 logs; attribute tasks when their events occur."""
     if sum(path.stat().st_size for path in paths) > 128 * 1024 * 1024:
         raise ValueError("Pilot event logs exceed 128 MiB")
     tasks: dict[str, list[dict[str, Any]]] = {group: [] for group in groups}
     stages: dict[int, str | None] = {}
+    applications: list[str | None] = []
+    versions: list[str | None] = []
+    stage_info: dict[tuple[int, int], dict[str, Any]] = {}
     for path in paths:
         with path.open(encoding="utf-8") as stream:
             for number, line in enumerate(stream, 1):
@@ -49,10 +61,21 @@ def summarize_event_logs(paths: Sequence[Path], groups: Sequence[str]) -> dict[s
                 except json.JSONDecodeError as error:
                     raise ValueError(f"Invalid Spark event JSON at {path.name}:{number}") from error
                 kind = event.get("Event")
-                if kind == "SparkListenerLogStart" and event.get("Spark Version") != "3.5.6":
-                    raise ValueError("Unsupported Spark event-log version")
+                if kind == "SparkListenerLogStart":
+                    versions.append(event.get("Spark Version"))
+                    if event.get("Spark Version") != "3.5.6":
+                        raise ValueError("Unsupported Spark event-log version")
                 if kind == "SparkListenerApplicationStart":
                     stages.clear()
+                    applications.append(event.get("App ID"))
+                elif kind in {"SparkListenerStageSubmitted", "SparkListenerStageCompleted"}:
+                    info = event["Stage Info"]
+                    key = (info["Stage ID"], info["Stage Attempt ID"])
+                    stage_info[key] = {
+                        "name": info.get("Stage Name"),
+                        "tasks": info.get("Number of Tasks"),
+                        "completed": kind == "SparkListenerStageCompleted",
+                    }
                 elif kind == "SparkListenerJobStart":
                     group = (event.get("Properties") or {}).get("spark.jobGroup.id")
                     for stage in event["Stage IDs"]:
@@ -61,8 +84,14 @@ def summarize_event_logs(paths: Sequence[Path], groups: Sequence[str]) -> dict[s
                     group = stages.get(event["Stage ID"])
                     if group is not None and group in tasks:
                         tasks[group].append(event)
+    return TaskLog(tasks, applications, stage_info, versions)
+
+
+def summarize_event_logs(paths: Sequence[Path], groups: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Keep missing metrics unavailable and attribute tasks using event order."""
+    log = read_task_log(paths, groups)
     results = {}
-    for group, events in tasks.items():
+    for group, events in log.tasks.items():
         metrics: dict[str, Any] = {"task_metrics_available": bool(events)}
         metrics["task_attempts"] = len(events) if events else None
         identities = [(e.get("Task Info") or {}).get("Executor ID") for e in events]
