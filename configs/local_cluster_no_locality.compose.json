@@ -1,0 +1,13 @@
+{
+  "services": {
+    "driver": {
+      "command": [
+        "python",
+        "scripts/check_cluster.py",
+        "--output",
+        "/trial/run",
+        "--no-locality-wait"
+      ]
+    }
+  }
+}

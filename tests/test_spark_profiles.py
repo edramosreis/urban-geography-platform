@@ -44,3 +44,11 @@ def test_executor_ids_use_the_jvm_executor_registry():
         _jsc=SimpleNamespace(sc=lambda: SimpleNamespace(getExecutorIds=lambda: values))
     )
     assert runtime.executor_ids(SimpleNamespace(sparkContext=context)) == ["0", "1"]
+
+
+def test_zero_locality_wait_is_an_explicit_diagnostic_not_the_default():
+    standard = runtime.execution_settings("two_executor")
+    diagnostic = runtime.execution_settings("two_executor_no_locality_wait")
+    assert "spark.locality.wait" not in standard
+    assert diagnostic == {**standard, "spark.locality.wait": "0s"}
+    assert runtime.execution_settings("local") == {"spark.master": "local[2]"}

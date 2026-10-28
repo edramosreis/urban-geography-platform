@@ -118,8 +118,9 @@ def _measure(
     return samples, details
 
 
-def run_two_executor(plan: BaselinePlan) -> dict[str, Any]:
+def run_two_executor(plan: BaselinePlan, *, no_locality_wait: bool = False) -> dict[str, Any]:
     """Requires separately approved running services and an external hard deadline."""
+    profile = "two_executor_no_locality_wait" if no_locality_wait else "two_executor"
     plan.output.mkdir(parents=True, exist_ok=False)
     events = plan.output / "spark-events"
     _save(plan.output / "progress.json", {"phase": "starting_spark"})
@@ -131,14 +132,14 @@ def run_two_executor(plan: BaselinePlan) -> dict[str, Any]:
     failure = None
     started = time.perf_counter()
     try:
-        spark = create_session(events, execution_profile="two_executor")
+        spark = create_session(events, execution_profile=profile)
         details["session_startup_seconds"] = time.perf_counter() - started
         registered = executor_ids(spark)
         if len(registered) != 2 or "driver" in registered:
             raise ValueError("Expected two registered non-driver executors")
         settings = {
             name: spark.sparkContext.getConf().get(name)
-            for name in (*execution_settings("two_executor"), "spark.driver.memory")
+            for name in (*execution_settings(profile), "spark.driver.memory")
         }
         settings.update(
             {
@@ -149,6 +150,9 @@ def run_two_executor(plan: BaselinePlan) -> dict[str, Any]:
                     "spark.sql.autoBroadcastJoinThreshold",
                 )
             }
+        )
+        settings["spark.locality.wait"] = spark.sparkContext.getConf().get(
+            "spark.locality.wait", "3s"
         )
         samples, preparation = _measure(spark, plan)
         details.update(preparation)
@@ -180,6 +184,7 @@ def run_two_executor(plan: BaselinePlan) -> dict[str, Any]:
     measured = [sample["collect_wall_seconds"] for sample in samples if not sample["warmup"]]
     report = {
         "status": "complete" if complete else "failed",
+        "execution_profile": profile,
         "scope": "single-host two-executor functionality; no scaling or speedup conclusion",
         "timed_operation": "exact distance join and full driver collection over cached inputs",
         "layout": "same building points repartitioned into two partitions; no replicated rows",

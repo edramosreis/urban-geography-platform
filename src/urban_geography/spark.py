@@ -11,9 +11,9 @@ def execution_settings(profile: str) -> dict[str, str]:
     """Only known local execution profiles; no arbitrary external master URI."""
     if profile == "local":
         return {"spark.master": "local[2]"}
-    if profile != "two_executor":
+    if profile not in {"two_executor", "two_executor_no_locality_wait"}:
         raise ValueError("Unknown Spark execution profile")
-    return {
+    settings = {
         "spark.master": "spark://master:7077",
         "spark.driver.host": "driver",
         "spark.driver.bindAddress": "0.0.0.0",
@@ -30,6 +30,9 @@ def execution_settings(profile: str) -> dict[str, str]:
         "spark.rpc.lookupTimeout": "30s",
         "spark.network.timeout": "60s",
     }
+    if profile == "two_executor_no_locality_wait":
+        settings["spark.locality.wait"] = "0s"
+    return settings
 
 
 def executor_ids(spark: SparkSession) -> list[str]:
@@ -90,7 +93,7 @@ def create_session(
     session = builder.getOrCreate()
     session.sparkContext.setLogLevel("WARN")
     try:
-        if execution_profile == "two_executor":
+        if execution_profile != "local":
             wait_for_executors(session)
         return SedonaContext.create(session)
     except Exception:

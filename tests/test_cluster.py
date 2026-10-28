@@ -89,3 +89,21 @@ def test_local_tasks_cannot_pass_the_cluster_acceptance_gate(tmp_path, monkeypat
     assert len(report["trials"]) == 6
     assert all(trial["equivalence"]["rows"] == 2 for trial in report["trials"])
     assert report["inputs_unchanged"]
+
+
+def test_diagnostic_compose_override_changes_only_the_driver_option():
+    path = Path(__file__).resolve().parents[1] / "configs/local_cluster_no_locality.compose.json"
+    override = json.loads(path.read_text(encoding="utf-8"))
+    assert override == {
+        "services": {
+            "driver": {
+                "command": [
+                    "python",
+                    "scripts/check_cluster.py",
+                    "--output",
+                    "/trial/run",
+                    "--no-locality-wait",
+                ]
+            }
+        }
+    }
