@@ -1,0 +1,10 @@
+{
+  "services": {
+    "driver": {
+      "environment": {
+        "URBAN_CLUSTER_CONFIG": "configs/coimbra_extended_performance_trial.json",
+        "URBAN_CLUSTER_REFERENCE": "${URBAN_CLUSTER_REFERENCE:?Set the completed extended cohort reference}"
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from urban_geography.benchmark import prepare_baseline
@@ -16,10 +17,26 @@ def main() -> None:
         action="store_true",
         help="Separate scheduling diagnostic: allow immediate non-local task placement",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(
+            os.environ.get("URBAN_CLUSTER_CONFIG", "configs/coimbra_performance_trial.json")
+        ),
+    )
+    parser.add_argument(
+        "--reference-run",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "URBAN_CLUSTER_REFERENCE", "artifacts/coimbra-performance-trial-20261028/reference"
+            )
+        ),
+    )
     args = parser.parse_args()
     plan = prepare_baseline(
-        Path("configs/coimbra_performance_trial.json"),
-        Path("artifacts/coimbra-performance-trial-20261028/reference"),
+        args.config,
+        args.reference_run,
         output=args.output,
         boundary_config=Path("configs/coimbra_boundary.json"),
     )

@@ -17,6 +17,7 @@ from urban_geography.benchmark import BaselinePlan
 from urban_geography.demo import _hash_paths
 from urban_geography.spark import create_session
 from urban_geography.transform import envelope_candidates, geometry_frame, select_buildings
+from urban_geography.workload_limits import PILOT_LIMITS, WorkloadLimits
 
 
 def distribution(values: Sequence[int]) -> dict[str, Any]:
@@ -67,13 +68,21 @@ def input_partition_rows(frame: DataFrame) -> dict[str, Any]:
 
 
 def profile_frames(
-    footprints: DataFrame, points: DataFrame, parks: DataFrame, threshold_m: float
+    footprints: DataFrame,
+    points: DataFrame,
+    parks: DataFrame,
+    threshold_m: float,
+    *,
+    limits: WorkloadLimits = PILOT_LIMITS,
 ) -> dict[str, Any]:
     """Describe validated projected frames; never collect the candidate pair relation."""
     raw_count, building_count, park_count = footprints.count(), points.count(), parks.count()
-    if not 0 <= building_count <= raw_count <= 20000 or not 0 <= park_count <= 20000:
+    if (
+        not 0 <= building_count <= raw_count <= limits.max_features
+        or not 0 <= park_count <= limits.max_features
+    ):
         raise ValueError("Profile rows exceed the retained pilot limit or selection differs")
-    if building_count * park_count > 2_000_000:
+    if building_count * park_count > limits.max_pairs:
         raise ValueError("Profile exceeds the pilot logical pair limit")
     selected = footprints.join(points.select("id"), "id", "left_semi")
     buildings = geometry_profile(selected)
@@ -142,7 +151,9 @@ def run_profile(plan: BaselinePlan) -> dict[str, Any]:
         ).cache()
         if {row.id for row in points.select("id").collect()} != set(plan.expected):
             raise ValueError("Profile selection differs from the completed reference")
-        profile = profile_frames(footprints, points, parks, plan.config.threshold_m)
+        profile = profile_frames(
+            footprints, points, parks, plan.config.threshold_m, limits=plan.config.limits
+        )
         settings = {
             "master": spark.sparkContext.master,
             "shuffle_partitions": spark.conf.get("spark.sql.shuffle.partitions"),
@@ -155,12 +166,13 @@ def run_profile(plan: BaselinePlan) -> dict[str, Any]:
     occupied_grids = Counter(row["grid_id"] for row in plan.expected.values())
     report = {
         "status": "complete",
-        "scope": "retained pilot description; no speedup or scaling conclusion",
+        "scope": "retained workload description; no speedup or scaling conclusion",
         "profile": profile,
         "occupied_grid_buildings": distribution(list(occupied_grids.values())),
         "reference_matches": sum(row["within_threshold"] for row in plan.expected.values()),
         "reference_summary_sha256": plan.reference.summary_sha256,
         "config": plan.config.as_dict(),
+        "workload_limits": plan.config.limits.as_dict(),
         "selection": plan.reference.summary["selection"],
         "raw_parquet": {
             kind: {

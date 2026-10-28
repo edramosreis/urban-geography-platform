@@ -71,7 +71,11 @@ def _measure(
             spark.read.parquet(str(plan.raw / "land_use.parquet")), plan.config
         ).cache()
         count, park_count = buildings.count(), parks.count()
-        if count != len(plan.expected) or not 0 < park_count or count * park_count > 2_000_000:
+        if (
+            count != len(plan.expected)
+            or not 0 < park_count
+            or count * park_count > plan.config.limits.max_pairs
+        ):
             raise ValueError("Cluster selection differs or exceeds the pilot pair limit")
         partitions = buildings.rdd.getNumPartitions()
         if partitions != 2:
@@ -198,6 +202,7 @@ def run_two_executor(plan: BaselinePlan, *, no_locality_wait: bool = False) -> d
         "input_hashes": plan.hashes,
         "reference_summary_sha256": plan.reference.summary_sha256,
         "config": plan.config.as_dict(),
+        "workload_limits": plan.config.limits.as_dict(),
         "trials": samples,
         "task_metrics": metrics,
         "measured_collect_seconds": {

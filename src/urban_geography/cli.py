@@ -53,10 +53,7 @@ def process(
         building_count, park_count = buildings.count(), parks.count()
         if not building_count:
             raise ValueError("No building representative points in the analysis area")
-        if building_count * park_count > 2_000_000:
-            raise ValueError(
-                "Pilot logical pair budget exceeds 2 million pairs; review the workload limits"
-            )
+        config.limits.check_pairs(building_count, park_count)
         facts = (
             proximity_distance_join(buildings, parks, config.threshold_m)
             .withColumn("source_release", F.lit(config.release))
@@ -95,6 +92,7 @@ def process(
         summary = {
             "status": "complete",
             "config": config.as_dict(),
+            "workload_limits": config.limits.as_dict(),
             "metric_version": METRIC_VERSION,
             "processing_implementation": "exact_distance_join_v1",
             "selection": {

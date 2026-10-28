@@ -93,16 +93,18 @@ def prepare_baseline(
         raise ValueError("Reference configuration differs from the benchmark configuration")
     raw = raw_root / config.release / config.area_id / config_key(config)
     if sum((raw / (kind + ".parquet")).stat().st_size for kind in ("building", "land_use")) > min(
-        config.max_output_bytes, 16 * 1024 * 1024
+        config.max_output_bytes, config.limits.max_output_bytes
     ):
         raise ValueError("Benchmark retained bytes exceed the pilot limit")
     manifest = validate_raw(raw, config)
+    retained_counts = {}
     for kind in ("building", "land_use"):
         count = pq.read_metadata(raw / (kind + ".parquet")).num_rows
         if count != manifest["extracts"][kind]["rows"] or not 0 < count <= min(
-            config.max_features, 20000
+            config.max_features, config.limits.max_features
         ):
-            raise ValueError("Benchmark retained row counts differ or exceed the pilot limit")
+            raise ValueError("Benchmark retained row counts differ or exceed the workload limit")
+        retained_counts[kind] = count
     if reference.summary.get("raw_manifest_sha256") != digest(raw / "manifest.json"):
         raise ValueError("Reference raw manifest differs from the retained benchmark input")
     boundary = (
@@ -115,6 +117,7 @@ def prepare_baseline(
     expected = {
         key: {name: row[name] for name in COLUMNS} for key, row in _records(reference).items()
     }
+    config.limits.check_pairs(len(expected), retained_counts["land_use"])
     inputs = [
         config_path,
         raw,
@@ -330,7 +333,10 @@ def run_baseline(
         settings["input_storage_level"] = str(buildings.storageLevel)
         building_count, park_count = buildings.count(), parks.count()
         preparation_seconds = time.perf_counter() - started
-        if building_count != len(plan.expected) or building_count * park_count > 2_000_000:
+        if (
+            building_count != len(plan.expected)
+            or building_count * park_count > plan.config.limits.max_pairs
+        ):
             raise ValueError("Benchmark selection differs or exceeds the pilot pair limit")
         for trial in schedule:
             group = trial["group"]
@@ -437,6 +443,7 @@ def run_baseline(
         "input_hashes": plan.hashes,
         "reference_summary_sha256": plan.reference.summary_sha256,
         "config": plan.config.as_dict(),
+        "workload_limits": plan.config.limits.as_dict(),
         "selection": plan.reference.summary["selection"],
         "buildings": building_count,
         "candidate_parks": park_count,
