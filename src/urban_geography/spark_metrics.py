@@ -3,6 +3,7 @@
 import json
 import math
 import statistics
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,12 @@ def summarize_event_logs(paths: Sequence[Path], groups: Sequence[str]) -> dict[s
     for group, events in tasks.items():
         metrics: dict[str, Any] = {"task_metrics_available": bool(events)}
         metrics["task_attempts"] = len(events) if events else None
+        identities = [(e.get("Task Info") or {}).get("Executor ID") for e in events]
+        metrics["task_attempts_by_executor"] = (
+            dict(sorted(Counter(identities).items()))
+            if events and all(isinstance(identity, str) and identity for identity in identities)
+            else None
+        )
         metrics["stage_attempts"] = (
             len({(e["Stage ID"], e.get("Stage Attempt ID")) for e in events}) if events else None
         )
@@ -82,7 +89,7 @@ def summarize_event_logs(paths: Sequence[Path], groups: Sequence[str]) -> dict[s
             )
         cpu = metrics.pop("executor_cpu_ns")
         metrics["executor_cpu_seconds"] = cpu / 1e9 if cpu is not None else None
-        remote, local = metrics.pop("shuffle_remote_bytes"), metrics.pop("shuffle_local_bytes")
+        remote, local = metrics["shuffle_remote_bytes"], metrics["shuffle_local_bytes"]
         metrics["shuffle_read_bytes"] = (
             remote + local if remote is not None and local is not None else None
         )

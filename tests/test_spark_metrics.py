@@ -50,6 +50,8 @@ def test_metrics_do_not_retroactively_count_cached_parent_tasks(tmp_path):
     assert report["trial"]["executor_cpu_seconds"] == 0.003
     assert report["trial"]["task_attempts"] == 1
     assert report["trial"]["shuffle_read_bytes"] == 12
+    assert report["trial"]["shuffle_remote_bytes"] == 5
+    assert report["trial"]["shuffle_local_bytes"] == 7
     assert report["trial"]["shuffle_write_bytes"] == 11
     assert report["trial"]["memory_spill_bytes"] == 0
     assert report["trial"]["task_duration_ms"] == {"median": 30, "p95_nearest_rank": 30, "max": 30}
@@ -90,3 +92,15 @@ def test_malformed_event_log_fails_explicitly(tmp_path):
     path.write_text('{"Event":', encoding="utf-8")
     with pytest.raises(ValueError, match="Invalid Spark event JSON"):
         summarize_event_logs([path], ["trial"])
+
+
+def test_executor_task_counts_retain_identity_and_unknown_values(tmp_path):
+    first, second = task(1), task(1)
+    first["Task Info"]["Executor ID"] = "0"
+    second["Task Info"]["Executor ID"] = "1"
+    path = log(tmp_path, [job([1], "trial"), first, second, second])
+    metrics = summarize_event_logs([path], ["trial", "missing"])
+    assert metrics["trial"]["task_attempts_by_executor"] == {"0": 1, "1": 2}
+    assert metrics["missing"]["task_attempts_by_executor"] is None
+    path = log(tmp_path, [job([1], "trial"), first, task(1)])
+    assert summarize_event_logs([path], ["trial"])["trial"]["task_attempts_by_executor"] is None
