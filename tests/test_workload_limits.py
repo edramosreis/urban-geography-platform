@@ -1,0 +1,77 @@
+"""Named candidate ceilings and unchanged identities of all retained configurations."""
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from urban_geography.config import RunConfig, load_config
+from urban_geography.ingest import config_key
+from urban_geography.workload_limits import COIMBRA_EXTENDED_LIMITS, PILOT_LIMITS, workload_limits
+
+
+@pytest.mark.parametrize(
+    "name,key",
+    [
+        ("coimbra_pilot.json", "d981ab1558f93b9c"),
+        ("coimbra_pilot_october.json", "851f8ade72098b64"),
+        ("coimbra_performance_trial.json", "6b42872945ba1279"),
+    ],
+)
+def test_legacy_raw_keys_and_configuration_serialization_stay_identical(name, key):
+    path = Path("configs") / name
+    config = load_config(path)
+    assert config_key(config) == key
+    assert json.loads(json.dumps(config.as_dict())) == json.loads(path.read_text(encoding="utf-8"))
+    assert config.limits == PILOT_LIMITS and "workload_profile" not in config.as_dict()
+    assert RunConfig(**config.as_dict()) == config
+    # Old source-run readers also accept operational budgets that were historically valid.
+    assert replace(config, max_features=40000).limits.max_pairs == 2_000_000
+
+
+def test_extended_config_is_explicit_pinned_and_serializable():
+    config = load_config(Path("configs/coimbra_extended_performance_trial.json"))
+    assert config.limits == COIMBRA_EXTENDED_LIMITS
+    assert config.max_features == 100000 and config.limits.max_pairs == 20_000_000
+    assert config.as_dict()["workload_profile"] == "coimbra_extended_v1"
+    assert RunConfig(**config.as_dict()) == config
+    with pytest.raises(ValueError, match="bbox"):
+        replace(config, workload_profile="pilot")
+    PILOT_LIMITS.check_pairs(1000, 2000)
+    with pytest.raises(ValueError, match="2 million"):
+        PILOT_LIMITS.check_pairs(1001, 2000)
+    COIMBRA_EXTENDED_LIMITS.check_pairs(100000, 200)
+    with pytest.raises(ValueError, match="20 million"):
+        COIMBRA_EXTENDED_LIMITS.check_pairs(100000, 201)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"bbox": (-8.50, 40.125, -8.345, 40.285)},
+        {"release": "2026-09-23.1"},
+        {"area_id": "another_area"},
+        {"threshold_m": 1000},
+        {"max_download_bytes": 256 * 1024**2 + 1},
+        {"max_output_bytes": 64 * 1024**2 + 1},
+        {"max_features": 100001},
+        {"max_source_files": 25},
+        {"max_features": True},
+        {"max_features": 1.5},
+        {"max_features": 0},
+        {"workload_profile": "unbounded"},
+    ],
+)
+def test_candidate_profile_cannot_drift_or_silently_raise_ceilings(changes):
+    config = load_config(Path("configs/coimbra_extended_performance_trial.json"))
+    with pytest.raises(ValueError):
+        replace(config, **changes)
+
+
+def test_larger_bbox_cannot_be_enabled_by_only_increasing_a_pilot_budget():
+    config = load_config(Path("configs/coimbra_performance_trial.json"))
+    with pytest.raises(ValueError, match="bbox"):
+        replace(config, bbox=(-8.505, 40.125, -8.345, 40.285), max_features=100000)
+    with pytest.raises(ValueError, match="Unknown workload"):
+        workload_limits("spark://unapproved")

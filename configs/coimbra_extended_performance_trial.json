@@ -1,0 +1,17 @@
+{
+  "area_id": "coimbra_extended_performance_trial",
+  "release": "2026-10-21.0",
+  "bbox": [
+    -8.505,
+    40.125,
+    -8.345,
+    40.285
+  ],
+  "metric_crs": "EPSG:3763",
+  "threshold_m": 500.0,
+  "max_download_bytes": 268435456,
+  "max_output_bytes": 67108864,
+  "max_features": 100000,
+  "max_source_files": 24,
+  "workload_profile": "coimbra_extended_v1"
+}
