@@ -1,0 +1,192 @@
+{
+  "services": {
+    "master": {
+      "image": "urban-geography:local",
+      "pull_policy": "never",
+      "working_dir": "/workspace",
+      "networks": [
+        "trial"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "..",
+          "target": "/workspace",
+          "read_only": true
+        }
+      ],
+      "restart": "no",
+      "hostname": "master",
+      "cpus": 0.25,
+      "mem_limit": "256m",
+      "environment": {
+        "SPARK_LOCAL_IP": "master",
+        "SPARK_DAEMON_MEMORY": "128m",
+        "PYTHONPATH": "/workspace/src",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PROJ_NETWORK": "OFF",
+        "SPARK_MASTER_OPTS": "-Dspark.deploy.maxExecutorRetries=1"
+      },
+      "command": [
+        "/opt/venv/lib/python3.11/site-packages/pyspark/bin/spark-class",
+        "org.apache.spark.deploy.master.Master",
+        "--host",
+        "master",
+        "--port",
+        "7077",
+        "--webui-port",
+        "8080"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; socket.create_connection(('master',7077),2).close()"
+        ],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 20,
+        "start_period": "3s"
+      }
+    },
+    "driver": {
+      "image": "urban-geography:local",
+      "pull_policy": "never",
+      "working_dir": "/workspace",
+      "networks": [
+        "trial"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "..",
+          "target": "/workspace",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "${URBAN_CLUSTER_OUTPUT:?Set a fresh trial output directory}",
+          "target": "/trial"
+        }
+      ],
+      "restart": "no",
+      "hostname": "driver",
+      "cpus": 0.75,
+      "mem_limit": "1792m",
+      "environment": {
+        "SPARK_LOCAL_IP": "driver",
+        "SPARK_DAEMON_MEMORY": "128m",
+        "PYTHONPATH": "/workspace/src",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PROJ_NETWORK": "OFF"
+      },
+      "command": [
+        "python",
+        "scripts/check_cluster.py",
+        "--output",
+        "/trial/run"
+      ],
+      "depends_on": {
+        "master": {
+          "condition": "service_healthy"
+        }
+      }
+    },
+    "worker-a": {
+      "image": "urban-geography:local",
+      "pull_policy": "never",
+      "working_dir": "/workspace",
+      "networks": [
+        "trial"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "..",
+          "target": "/workspace",
+          "read_only": true
+        }
+      ],
+      "restart": "no",
+      "hostname": "worker-a",
+      "cpus": 1,
+      "mem_limit": "1536m",
+      "environment": {
+        "SPARK_LOCAL_IP": "worker-a",
+        "SPARK_DAEMON_MEMORY": "128m",
+        "PYTHONPATH": "/workspace/src",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PROJ_NETWORK": "OFF"
+      },
+      "command": [
+        "/opt/venv/lib/python3.11/site-packages/pyspark/bin/spark-class",
+        "org.apache.spark.deploy.worker.Worker",
+        "--host",
+        "worker-a",
+        "--cores",
+        "1",
+        "--memory",
+        "768m",
+        "--work-dir",
+        "/tmp/worker",
+        "spark://master:7077"
+      ],
+      "depends_on": {
+        "master": {
+          "condition": "service_healthy"
+        }
+      }
+    },
+    "worker-b": {
+      "image": "urban-geography:local",
+      "pull_policy": "never",
+      "working_dir": "/workspace",
+      "networks": [
+        "trial"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "..",
+          "target": "/workspace",
+          "read_only": true
+        }
+      ],
+      "restart": "no",
+      "hostname": "worker-b",
+      "cpus": 1,
+      "mem_limit": "1536m",
+      "environment": {
+        "SPARK_LOCAL_IP": "worker-b",
+        "SPARK_DAEMON_MEMORY": "128m",
+        "PYTHONPATH": "/workspace/src",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PROJ_NETWORK": "OFF"
+      },
+      "command": [
+        "/opt/venv/lib/python3.11/site-packages/pyspark/bin/spark-class",
+        "org.apache.spark.deploy.worker.Worker",
+        "--host",
+        "worker-b",
+        "--cores",
+        "1",
+        "--memory",
+        "768m",
+        "--work-dir",
+        "/tmp/worker",
+        "spark://master:7077"
+      ],
+      "depends_on": {
+        "master": {
+          "condition": "service_healthy"
+        }
+      }
+    }
+  },
+  "networks": {
+    "trial": {
+      "internal": true
+    }
+  }
+}
