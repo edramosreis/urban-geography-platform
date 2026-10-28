@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+MAX_EVENT_LOG_BYTES = 128 * 1024 * 1024
+
 METRICS = {
     "executor_run_ms": ("Executor Run Time",),
     "executor_cpu_ns": ("Executor CPU Time",),
@@ -46,7 +48,7 @@ class TaskLog:
 
 def read_task_log(paths: Sequence[Path], groups: Sequence[str]) -> TaskLog:
     """Read bounded Spark 3.5.6 logs; attribute tasks when their events occur."""
-    if sum(path.stat().st_size for path in paths) > 128 * 1024 * 1024:
+    if sum(path.stat().st_size for path in paths) > MAX_EVENT_LOG_BYTES:
         raise ValueError("Pilot event logs exceed 128 MiB")
     tasks: dict[str, list[dict[str, Any]]] = {group: [] for group in groups}
     stages: dict[int, str | None] = {}

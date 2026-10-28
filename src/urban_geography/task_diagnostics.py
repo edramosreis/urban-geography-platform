@@ -1,5 +1,7 @@
 """Observed task distributions per stage attempt; no Spark startup or inferred row counts."""
 
+import hashlib
+import json
 import math
 import statistics
 from collections import Counter, defaultdict
@@ -7,7 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, TypeGuard
 
-from urban_geography.spark_metrics import _value, read_task_log
+from urban_geography.spark_metrics import MAX_EVENT_LOG_BYTES, _value, read_task_log
 
 
 def _integer(value: Any) -> TypeGuard[int]:
@@ -149,3 +151,41 @@ def summarize_stage_tasks(paths: Sequence[Path], groups: Sequence[str]) -> dict[
             "Task duration includes waits and does not isolate CPU or prove spatial data skew."
         ),
     }
+
+
+def _log_paths(directory: Path) -> list[Path]:
+    return sorted(
+        path for path in directory.iterdir() if path.is_file() and not path.name.startswith(".")
+    )
+
+
+def _log_hashes(paths: Sequence[Path]) -> dict[str, str]:
+    hashes = {}
+    for path in paths:
+        with path.open("rb") as stream:
+            hashes[str(path)] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return hashes
+
+
+def write_stage_report(event_dir: Path, groups: Sequence[str], output: Path) -> dict[str, Any]:
+    """Inspect retained logs and create one fresh JSON file outside inputs/live data."""
+    event_dir, output = event_dir.resolve(), output.resolve()
+    if not event_dir.is_dir():
+        raise ValueError("Choose a retained Spark event-log directory")
+    if output.exists():
+        raise ValueError("Report output exists; choose a fresh JSON path")
+    if output.is_relative_to(event_dir) or output.is_relative_to(Path("data").resolve()):
+        raise ValueError("Report output must be outside event logs and the data directory")
+    paths = _log_paths(event_dir)
+    if sum(path.stat().st_size for path in paths) > MAX_EVENT_LOG_BYTES:
+        raise ValueError("Pilot event logs exceed 128 MiB")
+    hashes = _log_hashes(paths)
+    report = summarize_stage_tasks(paths, groups)
+    if _log_paths(event_dir) != paths or _log_hashes(paths) != hashes:
+        raise ValueError("Event logs changed while being inspected; no report published")
+    report["input_hashes"] = hashes
+    payload = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
+    return report
