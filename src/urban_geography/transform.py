@@ -137,3 +137,21 @@ def proximity_envelope(buildings: DataFrame, parks: DataFrame, threshold_m: floa
         .filter(F.col("distance_m") <= threshold_m)
     )
     return _proximity_facts(buildings, pairs)
+
+
+def distance_join_pairs(buildings: DataFrame, parks: DataFrame, threshold_m: float) -> DataFrame:
+    """Express the exact distance condition as an inner join, with no manual envelope screen."""
+    if not math.isfinite(threshold_m) or threshold_m < 0:
+        raise ValueError("Distance join threshold must be finite and nonnegative")
+    points = buildings.select(F.col("id").alias("building_id"), "point")
+    polygons = parks.select(F.col("id").alias("park_id"), F.col("geom").alias("park_geom"))
+    return points.join(
+        polygons, F.expr("ST_Distance(point, park_geom)") <= threshold_m, "inner"
+    ).select("building_id", "park_id", F.expr("ST_Distance(point, park_geom)").alias("distance_m"))
+
+
+def proximity_distance_join(
+    buildings: DataFrame, parks: DataFrame, threshold_m: float
+) -> DataFrame:
+    """Let the ordinary optimizer plan the exact spatial join and preserve all buildings."""
+    return _proximity_facts(buildings, distance_join_pairs(buildings, parks, threshold_m))

@@ -7,7 +7,13 @@ from pyspark.sql import functions as F
 from shapely.geometry import MultiPolygon, Point, Polygon, box
 
 from urban_geography.spark import create_session
-from urban_geography.transform import envelope_candidates, proximity, proximity_envelope
+from urban_geography.transform import (
+    distance_join_pairs,
+    envelope_candidates,
+    proximity,
+    proximity_distance_join,
+    proximity_envelope,
+)
 
 
 @pytest.fixture(scope="module")
@@ -71,11 +77,20 @@ def test_screen_retains_every_qualifying_pair_and_exact_results(spark, threshold
     }
     assert set(oracle) <= candidate_ids
     assert actual_pairs == pytest.approx(oracle, abs=1e-6)
+    direct_pairs = {
+        (r.building_id, r.park_id): r.distance_m
+        for r in distance_join_pairs(buildings, parks, threshold).collect()
+    }
+    assert direct_pairs == pytest.approx(oracle, abs=1e-6)
     baseline = {r.building_id: r.asDict() for r in proximity(buildings, parks, threshold).collect()}
     screened = {
         r.building_id: r.asDict() for r in proximity_envelope(buildings, parks, threshold).collect()
     }
-    assert set(screened) == set(points) and screened == baseline
+    direct = {
+        r.building_id: r.asDict()
+        for r in proximity_distance_join(buildings, parks, threshold).collect()
+    }
+    assert set(screened) == set(points) and screened == baseline == direct
     for key, row in screened.items():
         eligible = sorted(
             (distance, park) for (building, park), distance in oracle.items() if building == key
@@ -104,6 +119,7 @@ def test_empty_inputs_preserve_the_baseline_contract(spark, empty):
     )
     actual = proximity_envelope(buildings, parks, 500).collect()
     assert actual == proximity(buildings, parks, 500).collect()
+    assert actual == proximity_distance_join(buildings, parks, 500).collect()
     assert len(actual) == (0 if empty == "buildings" else 1)
     if actual:
         assert actual[0].distance_m is None and not actual[0].within_threshold
@@ -113,3 +129,9 @@ def test_empty_inputs_preserve_the_baseline_contract(spark, empty):
 def test_invalid_screen_threshold_fails_without_spark(threshold):
     with pytest.raises(ValueError, match="finite and nonnegative"):
         envelope_candidates(None, None, threshold)
+
+
+@pytest.mark.parametrize("threshold", [-1, float("nan"), float("inf")])
+def test_invalid_direct_join_threshold_fails_without_spark(threshold):
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        distance_join_pairs(None, None, threshold)
