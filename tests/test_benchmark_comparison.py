@@ -12,11 +12,15 @@ from urban_geography.benchmark import trial_schedule
 from urban_geography.ingest import digest
 
 
-@pytest.mark.parametrize("comparison", [False, True])
-def test_schedule_has_separate_warmups_and_interleaved_reproducible_rounds(comparison):
-    schedule = trial_schedule(5, comparison, 1729)
+@pytest.mark.parametrize(
+    "comparison,direct", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_schedule_has_separate_warmups_and_interleaved_reproducible_rounds(comparison, direct):
+    schedule = trial_schedule(5, comparison, 1729, compare_distance_join=direct)
     variants = {"current_proximity", "envelope_prefilter"} if comparison else {"current_proximity"}
-    assert schedule == trial_schedule(5, comparison, 1729)
+    if direct:
+        variants.add("distance_join")
+    assert schedule == trial_schedule(5, comparison, 1729, compare_distance_join=direct)
     assert len(schedule) == len(variants) * 6
     assert len({s["group"] for s in schedule}) == len(schedule)
     assert all(s["warmup"] for s in schedule[: len(variants)])
@@ -28,7 +32,10 @@ def test_schedule_has_separate_warmups_and_interleaved_reproducible_rounds(compa
 
 
 @pytest.mark.integration
-def test_cli_comparison_preserves_results_and_suppresses_partial_timing_summaries(tmp_path):
+@pytest.mark.parametrize("envelope,direct", [(True, False), (True, True), (False, True)])
+def test_cli_comparison_preserves_results_and_suppresses_partial_timing_summaries(
+    tmp_path, envelope, direct
+):
     case = make_processing_case(tmp_path / "case")
     processed = subprocess.run(
         [
@@ -60,10 +67,16 @@ def test_cli_comparison_preserves_results_and_suppresses_partial_timing_summarie
         str(case.output),
         "--raw-root",
         str(case.raw_root),
-        "--compare-envelope",
         "--order-seed",
         "1729",
     ]
+    variants = {"current_proximity"}
+    if envelope:
+        command.append("--compare-envelope")
+        variants.add("envelope_prefilter")
+    if direct:
+        command.append("--compare-distance-join")
+        variants.add("distance_join")
     result = subprocess.run(
         [*command, "--output", str(output)],
         capture_output=True,
@@ -74,9 +87,12 @@ def test_cli_comparison_preserves_results_and_suppresses_partial_timing_summarie
     assert result.returncode == 0, result.stderr
     report = json.loads((output / "report.json").read_text())
     assert report["status"] == "complete" and report["inputs_unchanged"]
-    assert report["variant"] == "current_vs_envelope" and report["trial_order_seed"] == 1729
+    expected_name = (
+        "current" + ("_vs_envelope" if envelope else "") + ("_vs_distance_join" if direct else "")
+    )
+    assert report["variant"] == expected_name and report["trial_order_seed"] == 1729
     samples = report["trials"]
-    assert len(samples) == 12 and sum(s["warmup"] for s in samples) == 2
+    assert len(samples) == 6 * len(variants) and sum(s["warmup"] for s in samples) == len(variants)
     assert [s["group"] for s in samples] == [s["group"] for s in report["scheduled_trials"]]
     assert len({s["equivalence"]["output_sha256"] for s in samples}) == 1
     for sample in samples:
@@ -86,6 +102,7 @@ def test_cli_comparison_preserves_results_and_suppresses_partial_timing_summarie
         metrics = report["task_metrics"][sample["group"]]
         assert metrics["task_metrics_available"] and metrics["task_attempts"] > 0
         assert metrics["failed_task_attempts"] == 0
+    assert set(report["variant_collect_seconds"]) == variants
     for variant, timing in report["variant_collect_seconds"].items():
         measured = [
             s["collect_wall_seconds"]
@@ -96,10 +113,16 @@ def test_cli_comparison_preserves_results_and_suppresses_partial_timing_summarie
     assert (
         report["measured_collect_seconds"] == report["variant_collect_seconds"]["current_proximity"]
     )
-    assert report["candidate_counts"] == {"all_pairs_upper_bound": 2, "envelope_candidate_rows": 1}
-    assert report["candidate_diagnostic_seconds"] > 0
+    if envelope:
+        assert report["candidate_counts"] == {
+            "all_pairs_upper_bound": 2,
+            "envelope_candidate_rows": 1,
+        }
+        assert report["candidate_diagnostic_seconds"] > 0
+        assert report["task_metrics"]["benchmark.diagnostics"]["task_metrics_available"]
+    else:
+        assert report["candidate_counts"] is None and report["candidate_diagnostic_seconds"] is None
     assert report["evaluated_pair_count"] is None
-    assert report["task_metrics"]["benchmark.diagnostics"]["task_metrics_available"]
     assert all(digest(p) == value for p, value in originals.items())
 
     failed_output = tmp_path / "censored"
@@ -115,10 +138,7 @@ def test_cli_comparison_preserves_results_and_suppresses_partial_timing_summarie
     assert censored["status"] == "failed" and censored["inputs_unchanged"]
     assert len(censored["trials"]) == 1 and censored["trials"][0]["status"] == "censored"
     assert censored["measured_collect_seconds"] is None
-    assert censored["variant_collect_seconds"] == {
-        "current_proximity": None,
-        "envelope_prefilter": None,
-    }
+    assert censored["variant_collect_seconds"] == dict.fromkeys(variants)
     assert censored["candidate_counts"] is None
     group = censored["trials"][0]["group"]
     assert (failed_output / (group + ".json")).exists()

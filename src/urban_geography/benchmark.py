@@ -1,4 +1,4 @@
-"""Bounded pilot measurements with an optional interleaved exact-envelope comparison."""
+"""Bounded pilot measurements with optional interleaved exact spatial-join variants."""
 
 import io
 import json
@@ -33,12 +33,18 @@ from urban_geography.transform import (
     envelope_candidates,
     geometry_frame,
     proximity,
+    proximity_distance_join,
     proximity_envelope,
     select_buildings,
 )
 
 COLUMNS = ("building_id", "park_id", "distance_m", "within_threshold", "grid_id")
 TOLERANCE_M = 1e-6
+OPERATORS = {
+    "current_proximity": proximity,
+    "envelope_prefilter": proximity_envelope,
+    "distance_join": proximity_distance_join,
+}
 
 
 @dataclass(frozen=True)
@@ -238,16 +244,20 @@ def _resource_limits() -> dict[str, Any]:
     return values
 
 
-def trial_schedule(trials: int, compare_envelope: bool, seed: int) -> list[dict[str, Any]]:
+def trial_schedule(
+    trials: int, compare_envelope: bool, seed: int, *, compare_distance_join: bool = False
+) -> list[dict[str, Any]]:
     """One warmup each, then seeded/interleaved rounds over identical cached inputs."""
     variants = [("baseline", "current_proximity")]
     if compare_envelope:
         variants.append(("envelope", "envelope_prefilter"))
+    if compare_distance_join:
+        variants.append(("distance_join", "distance_join"))
     rng = random.Random(seed)
     schedule = []
     for index in range(trials + 1):
         order = list(variants)
-        if compare_envelope:
+        if len(variants) > 1:
             rng.shuffle(order)
         for prefix, variant in order:
             suffix = "warmup" if index == 0 else f"trial-{index:02d}"
@@ -269,6 +279,7 @@ def run_baseline(
     timeout_seconds: float = 60,
     compare_envelope: bool = False,
     order_seed: int = 1729,
+    compare_distance_join: bool = False,
 ) -> dict[str, Any]:
     validate_trial_options(trials, timeout_seconds)
     plan.output.mkdir(parents=True, exist_ok=False)
@@ -276,7 +287,9 @@ def run_baseline(
     started = time.perf_counter()
     spark = create_session(events_dir)
     startup_seconds = time.perf_counter() - started
-    schedule = trial_schedule(trials, compare_envelope, order_seed)
+    schedule = trial_schedule(
+        trials, compare_envelope, order_seed, compare_distance_join=compare_distance_join
+    )
     groups = ["baseline.prepare", *(trial["group"] for trial in schedule)]
     if compare_envelope:
         groups.append("benchmark.diagnostics")
@@ -322,7 +335,7 @@ def run_baseline(
         for trial in schedule:
             group = trial["group"]
             print(f"Measuring {group}", file=sys.stderr, flush=True)
-            operator = proximity_envelope if trial["variant"] == "envelope_prefilter" else proximity
+            operator = OPERATORS[trial["variant"]]
             frame = operator(buildings, parks, plan.config.threshold_m).select(*COLUMNS)
             spark.sparkContext.setJobGroup(group, group, interruptOnCancel=True)
             rows, sample = time_action(
@@ -395,9 +408,15 @@ def run_baseline(
             if complete
             else None
         )
+    experiment = {
+        (False, False): "current_proximity",
+        (True, False): "current_vs_envelope",
+        (False, True): "current_vs_distance_join",
+        (True, True): "current_vs_envelope_vs_distance_join",
+    }[compare_envelope, compare_distance_join]
     report = {
         "status": "complete" if complete else "failed",
-        "variant": "current_vs_envelope" if compare_envelope else "current_proximity",
+        "variant": experiment,
         "scope": "single-machine pilot instrumentation; no speedup or scaling conclusion",
         "timed_operation": "proximity calculation plus full driver collection",
         "cache_policy": (
@@ -410,7 +429,7 @@ def run_baseline(
         "input_preparation_seconds": preparation_seconds,
         "measured_collect_seconds": timings["current_proximity"],
         "variant_collect_seconds": timings,
-        "trial_order_seed": order_seed if compare_envelope else None,
+        "trial_order_seed": order_seed if compare_envelope or compare_distance_join else None,
         "scheduled_trials": schedule,
         "candidate_counts": candidate_counts,
         "candidate_count_definition": "separate untimed logical candidate rows, not distance calls",

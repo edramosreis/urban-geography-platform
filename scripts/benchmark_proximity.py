@@ -24,6 +24,11 @@ def main() -> None:
         action="store_true",
         help="Interleave the current and exact envelope-prefilter variants",
     )
+    parser.add_argument(
+        "--compare-distance-join",
+        action="store_true",
+        help="Include an exact distance inner join without a manual envelope screen",
+    )
     parser.add_argument("--order-seed", type=int, default=1729)
     args = parser.parse_args()
     validate_trial_options(args.trials, args.trial_timeout)
@@ -41,6 +46,7 @@ def main() -> None:
         timeout_seconds=args.trial_timeout,
         compare_envelope=args.compare_envelope,
         order_seed=args.order_seed,
+        compare_distance_join=args.compare_distance_join,
     )
     print(json.dumps({"status": report["status"], "report": str(plan.output / "report.json")}))
     if report["status"] != "complete":

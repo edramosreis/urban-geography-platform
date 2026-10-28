@@ -332,6 +332,13 @@ envelope candidate rows. This count does not measure actual distance-function
 calls. The legacy `measured_collect_seconds` field still describes the current
 operator. Any incomplete trial suppresses both variants' timing summaries.
 
+Add `--compare-distance-join` to include an explicit exact-distance inner join
+without the manual envelope screen. It can be combined with `--compare-envelope`
+for three-way interleaved trials (one warmup and five measured actions each).
+All variants share nearest-park ranking, unmatched-building preservation and grid
+assignment. Inspect the saved plans to see which spatial operators the optimizer
+actually selected; a different query shape does not guarantee a faster plan.
+
 These are single-machine pilot measurements including driver collection. They do
 not establish a speedup or distributed scaling. No source download or Iceberg
 publication occurs.
