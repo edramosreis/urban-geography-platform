@@ -355,6 +355,11 @@ input row partitions do not establish runtime task/shuffle skew. This command
 describes data; its elapsed time is not a comparative performance measurement.
 It neither downloads sources nor writes lakehouse tables.
 
+`configs/coimbra_performance_trial.json` selects a separate wider Coimbra window
+with the same pinned release and acquisition limits. Use its `--config` argument
+for extraction/processing, then supply the matching completed `--reference-run`
+to profiling/benchmark commands. Give each study area its own fresh output paths.
+
 ## Development checks
 
 ```sh
