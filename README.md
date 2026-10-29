@@ -477,3 +477,20 @@ directory. Run with Docker networking disabled. It compares projections with a
 separate local control and checks temporary local Iceberg readback/history.
 The configured Glue catalog is never queried; this is not managed Glue or
 Athena acceptance. Existing local defaults and dependencies are unchanged.
+
+### Package the Python project offline
+
+```sh
+docker compose run --rm pipeline python scripts/package_glue_project.py --output artifacts/glue-project-package-new
+```
+
+This builds the project's wheel with the pinned offline tools, checks that its
+Python and SQL payload matches the source, and verifies a fresh offline install.
+The check excludes checkout import paths and confirms SQL resources and the CLI
+entry point load from the installed wheel. It installs no dependencies and does
+not start Spark; the environment provides PySpark.
+
+Use a fresh output directory. The completed output contains the wheel, hashes,
+source inventory, manifest and build/install/import logs. It is the project
+artifact; frozen dependency delivery and a Glue writer remain separate work.
+No upload or AWS connection is performed.
