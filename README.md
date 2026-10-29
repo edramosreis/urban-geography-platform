@@ -467,8 +467,8 @@ docker compose run --rm pipeline python scripts/prepare_glue_runtime.py --deploy
 The recipe pins Glue 5.1, Sedona 1.8.0 and custom Iceberg 1.10.2 with its matching
 AWS bundle. It records catalog/S3 settings, versioned artifact checksums and
 proposed JAR locations without contacting AWS or uploading anything. This is a
-partial startup recipe; Python wheel packaging, the writer and job resources
-remain separate work.
+partial startup recipe; the writer and job resources remain separate work.
+Local Python artifact preparation is described below.
 
 `scripts/check_glue_runtime.py` checks the checksum-verified AWS bundle with the
 three existing runtime JARs inside the supported container. Supply
@@ -492,5 +492,27 @@ not start Spark; the environment provides PySpark.
 
 Use a fresh output directory. The completed output contains the wheel, hashes,
 source inventory, manifest and build/install/import logs. It is the project
-artifact; frozen dependency delivery and a Glue writer remain separate work.
+artifact; the separate dependency-bundle step below combines it with frozen
+dependencies. A Glue writer remains separate work.
 No upload or AWS connection is performed.
+
+### Freeze the Python dependency bundle
+
+Download only the existing locked runtime wheels for Glue 5.1 / CPython 3.11 /
+x86_64, then assemble them with a previously verified project package:
+
+    docker compose run --rm pipeline python scripts/fetch_glue_dependencies.py --output artifacts/glue-python-wheel-cache-new
+
+    docker compose run --rm pipeline python scripts/package_glue_bundle.py --wheel-cache artifacts/glue-python-wheel-cache-new --project-package artifacts/glue-project-package-new --output artifacts/glue-python-bundle-new
+
+The first command explicitly downloads hash-locked binary wheels from PyPI;
+it does not change versions or fetch source archives. The second works offline
+from those retained inputs, creates a deterministic .gluewheels.zip and checks
+its installation in a fresh environment. The acceptance run additionally disabled
+Docker networking during assembly. PySpark and Py4J stay provided by the runtime.
+Use fresh output directories; inspect the completed manifest and logs.
+
+The checker verifies dependency versions and import origins, installed SQL
+resources and native-library operations without starting Spark. This local Linux
+check does not validate a managed Glue startup, upload artifacts or create AWS
+resources. Job configuration and cloud execution remain separate work.
