@@ -10,7 +10,7 @@ import pytest
 
 from urban_geography.config import RunConfig
 from urban_geography.ingest import digest
-from urban_geography.lakehouse import FACT_TYPES, load_completed_run, publish_facts
+from urban_geography.lakehouse import FACT_TYPES, _table_metadata, load_completed_run, publish_facts
 from urban_geography.spark import create_session
 
 pytestmark = pytest.mark.integration
@@ -194,3 +194,65 @@ def test_replay_detects_modified_iceberg_rows_without_writing(spark, processed_r
         publish_facts(spark, run, table_name="modified")
     assert spark.table(table + ".snapshots").count() == 2
     assert spark.table(table).count() == 3
+
+
+def test_explicit_catalog_and_namespace_isolate_publication_and_replay(
+    spark, processed_run, tmp_path
+):
+    run = load_completed_run(processed_run)
+    input_hashes = file_hashes(processed_run)
+    control = publish_facts(spark, run, table_name="configured_target")
+    control_metadata = _table_metadata(spark, control["table"])
+
+    warehouse = tmp_path / "separate-warehouse"
+    prefix = "spark.sql.catalog.prepared_m4"
+    spark.conf.set(prefix, "org.apache.iceberg.spark.SparkCatalog")
+    spark.conf.set(prefix + ".type", "hadoop")
+    spark.conf.set(prefix + ".warehouse", warehouse.as_uri())
+    options = {
+        "catalog_name": "prepared_m4",
+        "namespace": "urban_geo_test_m4",
+        "table_name": "configured_target",
+    }
+    result = publish_facts(spark, run, **options)
+    table = "prepared_m4.urban_geo_test_m4.configured_target"
+    assert result == {
+        "status": "created",
+        "table": table,
+        "format_version": 2,
+        "snapshot_id": _table_metadata(spark, table)["current-snapshot-id"],
+        "rows": 2,
+        "source_run_sha256": run.summary_sha256,
+        "readback_matches": True,
+    }
+    metadata = _table_metadata(spark, table)
+    assert metadata["location"] == warehouse.as_uri() + "/urban_geo_test_m4/configured_target"
+    assert metadata["format-version"] == 2
+    assert metadata["properties"]["source-run-sha256"] == run.summary_sha256
+    expected = pq.read_table(processed_run / "building_proximity").to_pylist()
+    assert {row.building_id: row.asDict() for row in spark.table(table).collect()} == {
+        row["building_id"]: row for row in expected
+    }
+    assert publish_facts(spark, run, **options) == {**result, "status": "reused"}
+    assert spark.table(table + ".snapshots").count() == 1
+
+    summary_path = processed_run / "summary.json"
+    original_summary = summary_path.read_bytes()
+    changed = json.loads(original_summary)
+    changed["completed_at_utc"] = "2026-10-29T00:00:00Z"
+    summary_path.write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(ValueError, match="already contains a different run"):
+        publish_facts(spark, load_completed_run(processed_run), **options)
+    assert spark.table(table + ".snapshots").count() == 1
+    summary_path.write_bytes(original_summary)
+
+    # Detect external changes on the selected target without writing another snapshot.
+    spark.read.parquet(str(processed_run / "building_proximity")).select(*FACT_TYPES).limit(
+        1
+    ).writeTo(table).append()
+    with pytest.raises(ValueError, match="readback differs"):
+        publish_facts(spark, run, **options)
+    assert spark.table(table + ".snapshots").count() == 2
+    assert _table_metadata(spark, control["table"]) == control_metadata
+    assert spark.table(control["table"]).count() == 2
+    assert file_hashes(processed_run) == input_hashes

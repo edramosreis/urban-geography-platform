@@ -161,18 +161,28 @@ def _table_metadata(spark: SparkSession, table: str) -> dict[str, Any]:
 
 
 def publish_facts(
-    spark: SparkSession, run: CompletedRun, *, table_name: str = "building_proximity"
+    spark: SparkSession,
+    run: CompletedRun,
+    *,
+    table_name: str = "building_proximity",
+    catalog_name: str = "local",
+    namespace: str = "analytics",
 ) -> dict[str, Any]:
-    """Create one v2 fact table or verify an exact replay; never append or replace here."""
-    if not re.fullmatch(r"[a-z][a-z0-9_]*", table_name):
-        raise ValueError("Iceberg table_name must be a safe lowercase identifier")
-    table = "local.analytics." + table_name
+    """Create one v2 fact table or verify replay in an explicitly configured catalog."""
+    for name, value in (
+        ("table_name", table_name),
+        ("catalog_name", catalog_name),
+        ("namespace", namespace),
+    ):
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", value):
+            raise ValueError(f"Iceberg {name} must be a safe lowercase identifier")
+    table = f"{catalog_name}.{namespace}.{table_name}"
     facts = spark.read.parquet(str(run.path / "building_proximity"))
     total = _validate_facts(facts, run.summary)
     facts = facts.select(*FACT_TYPES)
     exists = spark.catalog.tableExists(table)
     if not exists:
-        spark.sql("CREATE NAMESPACE IF NOT EXISTS local.analytics")
+        spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {catalog_name}.{namespace}")
         (
             facts.writeTo(table)
             .using("iceberg")
