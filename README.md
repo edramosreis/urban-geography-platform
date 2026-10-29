@@ -516,3 +516,21 @@ The checker verifies dependency versions and import origins, installed SQL
 resources and native-library operations without starting Spark. This local Linux
 check does not validate a managed Glue startup, upload artifacts or create AWS
 resources. Job configuration and cloud execution remain separate work.
+
+
+### Prepare a retained input folder
+
+Prepare a small completed processing run for later delivery to the writer:
+
+    docker compose run --rm pipeline python scripts/prepare_glue_input.py --run artifacts/completed-run --summary-sha256 SUMMARY_SHA256 --output artifacts/glue-input-new
+
+Replace SUMMARY_SHA256 with the independently selected SHA256 of that run's
+summary.json. The command copies only the pinned summary and its listed fact/grid
+Parquet files into a fresh output folder, recording hashes, sizes and limits in
+input-manifest.json. It checks the copied bytes again before publishing the folder.
+
+The pilot source-payload ceiling is 16 MiB including the summary; a smaller
+configured byte ceiling is respected. Preparation also bounds summary size,
+Parquet file count and row counts, and rejects the extended workload profile.
+It preserves the original Parquet bytes and starts no Spark session. This is local
+input preparation; upload and managed Glue job execution remain separate work.
