@@ -45,5 +45,7 @@ _netrc
 .terraform
 *.tfstate*
 *.tfvars
+*.tfvars.json
+*.tfplan*
 terraform.tfplan
 crash.log

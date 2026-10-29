@@ -30,6 +30,16 @@ SPEC.loader.exec_module(PUBLICATION)
         "data/raw/part.parquet",
         "artifacts/summary.json",
         "personal.txt",
+        "infra/aws/terraform.tfstate",
+        "infra/aws/terraform.tfstate.backup",
+        "infra/aws/production.tfvars",
+        "infra/aws/production.tfvars.json",
+        "infra/aws/review.tfplan",
+        "infra/aws/architecture.md",
+        "infra/aws/unreviewed.tf",
+        "configs/production.tfvars.json",
+        "configs/terraform.tfstate.backup",
+        "configs/review.tfplan.json",
     ],
 )
 def test_private_paths_cannot_enter_published_history(path):
@@ -47,6 +57,12 @@ def test_private_paths_cannot_enter_published_history(path):
         "src/urban_geography/cli.py",
         "tests/test_publication.py",
         "scripts/check_publication.py",
+        "infra/aws/versions.tf",
+        "infra/aws/variables.tf",
+        "infra/aws/main.tf",
+        "infra/aws/outputs.tf",
+        "infra/aws/.terraform.lock.hcl",
+        "infra/aws/tests/foundation.tftest.hcl",
     ],
 )
 def test_runtime_and_verification_sources_can_be_published(path):

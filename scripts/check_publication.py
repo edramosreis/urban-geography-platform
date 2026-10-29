@@ -20,6 +20,15 @@ ROOT_FILES = {
     "pyproject.toml",
     "uv.lock",
 }
+# Deliberate, exact allowance for reviewed infrastructure source; never local state/plans.
+INFRA_FILES = {
+    "infra/aws/versions.tf",
+    "infra/aws/variables.tf",
+    "infra/aws/main.tf",
+    "infra/aws/outputs.tf",
+    "infra/aws/.terraform.lock.hcl",
+    "infra/aws/tests/foundation.tftest.hcl",
+}
 PUBLIC_PREFIXES = ("src/", "tests/", "scripts/", "configs/", ".github/workflows/")
 PRIVATE_COMPONENTS = {
     "docs",
@@ -55,6 +64,7 @@ PRIVATE_SUFFIXES = {
     ".bundle",
     ".tfvars",
     ".tfstate",
+    ".tfplan",
     ".kubeconfig",
     ".pyc",
     ".pyo",
@@ -62,7 +72,7 @@ PRIVATE_SUFFIXES = {
 
 
 def is_publishable(path: str) -> bool:
-    if path in ROOT_FILES:
+    if path in ROOT_FILES or path in INFRA_FILES:
         return True
     parts = PurePosixPath(path).parts
     if not parts or ".." in parts or path.startswith("/"):
@@ -73,7 +83,9 @@ def is_publishable(path: str) -> bool:
     if any(part in PRIVATE_COMPONENTS or part.startswith(".env") for part in lowered):
         return False
     if any(
-        part.startswith(("credentials.", "secrets.", "id_rsa", "id_ed25519")) for part in lowered
+        part.startswith(("credentials.", "secrets.", "id_rsa", "id_ed25519"))
+        or any(marker in part for marker in (".tfstate.", ".tfvars.", ".tfplan."))
+        for part in lowered
     ):
         return False
     return PurePosixPath(path).suffix.casefold() not in PRIVATE_SUFFIXES
