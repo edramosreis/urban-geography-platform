@@ -421,3 +421,33 @@ DGT CAOP boundaries use [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/
 Required attribution: “Informação geográfica cedida pela Direção-Geral do Território”.
 The acquisition retains the official metadata and licence evidence alongside the
 boundary. See [DGT CAOP](https://www.dgterritorio.gov.pt/atividades/cartografia/cartografia-tematica/caop).
+
+## AWS foundation (local validation)
+
+The first AWS configuration is in `infra/aws/`: separate private S3 buckets for
+lakehouse data and temporary query results, a Glue catalog database and an Athena
+engine 3 workgroup that starts disabled. Both buckets request SSE-S3 encryption,
+disable object ACLs and deny requests without TLS. The lake retains object
+versions; only the separate query-results prefix has seven-day expiration.
+Athena enforces a proposed 100 MiB per-query scan cutoff. That cutoff is not an
+overall spending cap.
+
+Terraform 1.13.5 and AWS provider 6.19.0 are pinned independently of the Python/Spark
+runtime. With that Terraform version available, initialize and validate locally:
+
+```sh
+terraform -chdir=infra/aws init -backend=false -input=false
+terraform -chdir=infra/aws fmt -check -recursive
+terraform -chdir=infra/aws validate
+terraform -chdir=infra/aws test
+```
+
+Initialization downloads the locked provider. All nine test runs explicitly use
+a mock AWS provider and a plan command; they need no AWS credentials and create
+no infrastructure. Mock tests verify configuration, not live AWS permissions or
+Spark/Athena compatibility. The normal pipeline Docker image does not include
+Terraform.
+
+The proposed region is eu-west-1. Actual deployment still needs a reviewed target
+account, regional cost estimate, execution limits and teardown procedure.
+This increment defines no Glue processing job, table registration or dbt models.
