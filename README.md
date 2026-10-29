@@ -100,6 +100,10 @@ separate validation. Grid outputs remain in the reference processing
 run's Parquet files.
 The local filesystem catalog provides a single-writer demonstration; AWS catalog
 and query-engine compatibility require separate validation.
+Metadata inspection resolves and refreshes the table through Iceberg's Spark
+catalog API, preserving full provenance without Python opening a local metadata
+file. Publication commands still use the local catalog; this does not enable
+S3/Glue publishing.
 
 ### Release history
 

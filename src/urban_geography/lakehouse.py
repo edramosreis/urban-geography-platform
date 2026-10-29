@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -148,19 +147,17 @@ def _validate_facts(facts: DataFrame, summary: dict[str, Any]) -> int:
 
 
 def _table_metadata(spark: SparkSession, table: str) -> dict[str, Any]:
-    # SHOW TBLPROPERTIES is a redacted display, not a lossless metadata API.
-    entry = (
-        spark.table(table + ".metadata_log_entries")
-        .orderBy(F.col("timestamp").desc())
-        .select("file")
-        .first()
-    )
-    if entry is None:
+    """Read refreshed committed metadata through Iceberg's configured catalog and FileIO."""
+    # SHOW TBLPROPERTIES is redacted; Python filesystem paths also exclude object storage.
+    jvm = spark._jvm
+    if jvm is None:
+        raise RuntimeError("Spark JVM is unavailable for Iceberg metadata inspection")
+    iceberg = jvm.org.apache.iceberg
+    loaded = iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table)
+    metadata = loaded.operations().refresh()
+    if metadata is None:
         raise ValueError("Iceberg table has no committed metadata")
-    location = urlparse(entry.file)
-    if location.scheme != "file" or location.netloc:
-        raise ValueError("This publisher supports a local filesystem catalog only")
-    return json.loads(Path(unquote(location.path)).read_text(encoding="utf-8"))
+    return json.loads(iceberg.TableMetadataParser.toJson(metadata))
 
 
 def publish_facts(
