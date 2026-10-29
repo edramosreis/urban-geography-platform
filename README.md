@@ -455,3 +455,25 @@ Terraform.
 The proposed region is eu-west-1. Actual deployment still needs a reviewed target
 account, regional cost estimate, execution limits and teardown procedure.
 This increment defines no Glue processing job, table registration or dbt models.
+
+### Prepare the proposed Glue runtime
+
+Render a local startup recipe with synthetic target values:
+
+```sh
+docker compose run --rm pipeline python scripts/prepare_glue_runtime.py --deployment-name urban-geo-test --account-id 123456789012 --output artifacts/glue-runtime-example.json
+```
+
+The recipe pins Glue 5.1, Sedona 1.8.0 and custom Iceberg 1.10.2 with its matching
+AWS bundle. It records catalog/S3 settings, versioned artifact checksums and
+proposed JAR locations without contacting AWS or uploading anything. This is a
+partial startup recipe; Python wheel packaging, the writer and job resources
+remain separate work.
+
+`scripts/check_glue_runtime.py` checks the checksum-verified AWS bundle with the
+three existing runtime JARs inside the supported container. Supply
+`--aws-bundle /path/to/iceberg-aws-bundle-1.10.2.jar` and a fresh `--output`
+directory. Run with Docker networking disabled. It compares projections with a
+separate local control and checks temporary local Iceberg readback/history.
+The configured Glue catalog is never queried; this is not managed Glue or
+Athena acceptance. Existing local defaults and dependencies are unchanged.
