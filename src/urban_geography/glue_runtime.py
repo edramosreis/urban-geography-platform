@@ -3,6 +3,8 @@
 import re
 from typing import Any
 
+from urban_geography.glue_sdk import SDK_PINS
+
 # Cloud runtime pins intentionally match the existing local build pins.
 JARS = [
     (
@@ -86,6 +88,7 @@ def runtime_plan(
             "--conf": " --conf ".join(f"{key}={value}" for key, value in settings.items()),
         },
         "python_requirement": "apache-sedona==1.8.0",
+        "provided_python_sdk": dict(SDK_PINS),
         "scope": (
             "Startup configuration only. No uploads, credentials, IAM, job creation or execution. "
             "Execution consumes separately prepared software artifacts and retained input."
