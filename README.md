@@ -467,8 +467,8 @@ docker compose run --rm pipeline python scripts/prepare_glue_runtime.py --deploy
 The recipe pins Glue 5.1, Sedona 1.8.0 and custom Iceberg 1.10.2 with its matching
 AWS bundle. It records catalog/S3 settings, versioned artifact checksums and
 proposed JAR locations without contacting AWS or uploading anything. This is a
-partial startup recipe; the writer and job resources remain separate work.
-Local Python artifact preparation is described below.
+partial startup recipe; managed job resources and execution remain separate work.
+Local artifact preparation and the writer entry point are described below.
 
 `scripts/check_glue_runtime.py` checks the checksum-verified AWS bundle with the
 three existing runtime JARs inside the supported container. Supply
@@ -493,7 +493,7 @@ not start Spark; the environment provides PySpark.
 Use a fresh output directory. The completed output contains the wheel, hashes,
 source inventory, manifest and build/install/import logs. It is the project
 artifact; the separate dependency-bundle step below combines it with frozen
-dependencies. A Glue writer remains separate work.
+dependencies. Managed startup validation and job resources remain separate work.
 No upload or AWS connection is performed.
 
 ### Freeze the Python dependency bundle
@@ -534,3 +534,23 @@ configured byte ceiling is respected. Preparation also bounds summary size,
 Parquet file count and row counts, and rejects the extended workload profile.
 It preserves the original Parquet bytes and starts no Spark session. This is local
 input preparation; upload and managed Glue job execution remain separate work.
+
+
+### Prepared-input writer entry point
+
+scripts/run_glue_writer.py accepts a prepared local input directory, explicit
+summary SHA256, deployment name and account ID. It derives the catalog/database
+and expected settings from the startup recipe. The job must supply those settings
+and the verified JAR/Python artifacts before this entry point runs.
+
+The writer verifies the input manifest before obtaining its Spark session, checks
+Spark 3.5.6 and the expected settings, and invokes immutable Iceberg publication
+with exact readback/replay. It stops its session on success or failure and emits
+a completion receipt on standard output only after the final input check.
+
+For this bounded pilot, the driver reads the verified Parquet rows with PyArrow
+and creates a Spark DataFrame with the explicit fact schema. Spark distributes
+the rows; executors need no access to the driver's local input paths. This
+driver materialization is limited to the prepared pilot contract, not a large
+dataset ingestion path. Input upload/staging, job resources and managed Glue
+validation remain separate work.

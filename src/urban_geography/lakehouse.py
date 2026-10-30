@@ -167,8 +167,9 @@ def publish_facts(
     table_name: str = "building_proximity",
     catalog_name: str = "local",
     namespace: str = "analytics",
+    source_facts: DataFrame | None = None,
 ) -> dict[str, Any]:
-    """Create one v2 fact table or verify replay in an explicitly configured catalog."""
+    """Publish/replay verified facts; an optional frame is supplied by a trusted run reader."""
     for name, value in (
         ("table_name", table_name),
         ("catalog_name", catalog_name),
@@ -177,7 +178,11 @@ def publish_facts(
         if not re.fullmatch(r"[a-z][a-z0-9_]*", value):
             raise ValueError(f"Iceberg {name} must be a safe lowercase identifier")
     table = f"{catalog_name}.{namespace}.{table_name}"
-    facts = spark.read.parquet(str(run.path / "building_proximity"))
+    facts = (
+        source_facts
+        if source_facts is not None
+        else spark.read.parquet(str(run.path / "building_proximity"))
+    )
     total = _validate_facts(facts, run.summary)
     facts = facts.select(*FACT_TYPES)
     exists = spark.catalog.tableExists(table)

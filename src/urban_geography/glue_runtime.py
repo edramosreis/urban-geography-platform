@@ -88,6 +88,6 @@ def runtime_plan(
         "python_requirement": "apache-sedona==1.8.0",
         "scope": (
             "Startup configuration only. No uploads, credentials, IAM, job creation or execution. "
-            "Python wheel packaging and the writer entry point remain separate work."
+            "Execution consumes separately prepared software artifacts and retained input."
         ),
     }
