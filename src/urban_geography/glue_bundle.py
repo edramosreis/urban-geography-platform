@@ -60,14 +60,14 @@ def unpack_verified(archive_path: Path, members: dict[str, str], output: Path) -
 
 def publish_directory(stage: Path, destination: Path) -> None:
     """Bound transient Windows bind-mount permission errors; never replace a destination."""
-    for attempt in range(4):
+    for attempt in range(6):
         if destination.exists():
             raise FileExistsError("Bundle publication destination already exists")
         try:
             stage.rename(destination)
             return
         except PermissionError:
-            if attempt == 3:
+            if attempt == 5:
                 raise
             time.sleep(0.5 * (attempt + 1))
 

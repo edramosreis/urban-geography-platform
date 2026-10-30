@@ -109,7 +109,7 @@ def test_publication_retries_only_permission_errors_with_a_fixed_limit(tmp_path,
     monkeypatch.setattr(type(stage), "rename", persistent)
     with pytest.raises(PermissionError):
         bundle.publish_directory(other, tmp_path / "not-published")
-    assert len(calls) == 4 and waits == [0.5, 1.0, 1.5]
+    assert len(calls) == 6 and waits == [0.5, 1.0, 1.5, 2.0, 2.5]
     assert other.exists()
 
 

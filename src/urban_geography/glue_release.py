@@ -260,8 +260,7 @@ def freeze_release(
     pin = hashlib.sha256(content).hexdigest()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".release-", dir=output.parent) as temporary:
-        stage = Path(temporary) / "payload"
-        stage.mkdir()
+        stage = Path(temporary)
         for name, source in paths.items():
             destination = stage / name
             destination.parent.mkdir(parents=True, exist_ok=True)
