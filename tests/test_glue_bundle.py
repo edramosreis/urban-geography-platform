@@ -127,3 +127,11 @@ def test_publication_refuses_existing_destination_without_rename(tmp_path, monke
     with pytest.raises(FileExistsError):
         bundle.publish_directory(stage, destination)
     assert keep.read_text() == "keep" and stage.exists()
+
+
+def test_bundle_requirements_explicitly_select_the_project_with_its_hash():
+    actual = bundle.project_requirements("example==1.0 --hash=sha256:abc\n", "0.1.0", "f" * 64)
+    assert (
+        actual
+        == "example==1.0 --hash=sha256:abc\nurban-geography==0.1.0 --hash=sha256:" + "f" * 64 + "\n"
+    )

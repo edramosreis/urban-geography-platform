@@ -114,7 +114,10 @@ def build_bundle(root: Path, cache: Path, project_package: Path, output: Path) -
             raise ValueError("Wheel changed while copying into bundle")
         paths.append(target)
     archive = output / "urban-geography.gluewheels.zip"
-    members = write_archive(paths, plan["requirements"], archive)
+    requirements = project_requirements(
+        plan["requirements"], project["project"]["version"], project_info["sha256"]
+    )
+    members = write_archive(paths, requirements, archive)
     inputs = {
         "pins": plan["pins"] | {"urban-geography": project["project"]["version"]},
         "provided": plan["provided"],
@@ -208,3 +211,8 @@ def build_bundle(root: Path, cache: Path, project_package: Path, output: Path) -
     (output / "manifest.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     publish_directory(output, destination)
     return receipt
+
+
+def project_requirements(dependencies: str, version: str, wheel_sha256: str) -> str:
+    """Select the project itself as well as its frozen runtime dependencies."""
+    return dependencies.rstrip() + f"\nurban-geography=={version} --hash=sha256:{wheel_sha256}\n"
