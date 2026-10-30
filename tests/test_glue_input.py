@@ -250,3 +250,72 @@ def test_cli_stages_without_a_java_runtime_and_refuses_reuse(history_run_factory
     failed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True)
     assert failed.returncode != 0 and "already exists" in failed.stderr
     assert hashes(output) == before
+
+
+def test_prepared_reader_matches_the_staged_identity_and_inventory(history_run_factory, tmp_path):
+    run = history_run_factory()
+    output = tmp_path / "staged"
+    receipt = inputs.stage_input(run.path, run.summary_sha256, output)
+    prepared = inputs.load_prepared_input(output, run.summary_sha256)
+    assert prepared.run.summary_sha256 == run.summary_sha256
+    assert prepared.files == receipt["files"]
+    assert prepared.payload_bytes == receipt["payload_bytes"]
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing",
+        "status",
+        "version_type",
+        "file_size",
+        "file_hash",
+        "extra",
+        "oversize",
+        "symlink",
+        "unpublished",
+    ],
+)
+def test_prepared_reader_refuses_a_damaged_or_unpublished_receipt(
+    history_run_factory, tmp_path, defect
+):
+    run = history_run_factory()
+    output = tmp_path / "staged"
+    inputs.stage_input(run.path, run.summary_sha256, output)
+    path = output / "input-manifest.json"
+    manifest = json.loads(path.read_text())
+    if defect == "missing":
+        path.unlink()
+    elif defect == "status":
+        manifest["status"] = "failed"
+    elif defect == "version_type":
+        manifest["contract_version"] = True
+    elif defect in {"file_size", "file_hash"}:
+        key = next(name for name in manifest["files"] if name.endswith(".parquet"))
+        field = "bytes" if defect == "file_size" else "sha256"
+        manifest["files"][key][field] = 1 if field == "bytes" else "0" * 64
+    elif defect == "extra":
+        manifest["unexpected"] = "field"
+    elif defect == "oversize":
+        path.write_bytes(b" " * (inputs.MAX_SUMMARY_BYTES + 1))
+    elif defect == "symlink":
+        original = tmp_path / "manifest.json"
+        path.rename(original)
+        path.symlink_to(original)
+    elif defect == "unpublished":
+        other = tmp_path / ".input-unpublished"
+        output.rename(other)
+        output = other
+    if defect not in {"missing", "oversize", "symlink", "unpublished"}:
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError):
+        inputs.load_prepared_input(output, run.summary_sha256)
+
+
+def test_prepared_reader_rechecks_the_payload_after_preparation(history_run_factory, tmp_path):
+    run = history_run_factory()
+    output = tmp_path / "staged"
+    inputs.stage_input(run.path, run.summary_sha256, output)
+    next((output / "building_proximity").glob("*.parquet")).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="checksum differs"):
+        inputs.load_prepared_input(output, run.summary_sha256)

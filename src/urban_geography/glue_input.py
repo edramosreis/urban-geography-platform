@@ -130,10 +130,20 @@ def stage_input(path: Path, expected_summary_sha256: str, output: Path) -> dict[
     staged = inspect_input(stage, expected_summary_sha256)
     if staged.files != plan.files or staged.payload_bytes != plan.payload_bytes:
         raise ValueError("Staged input inventory differs")
-    receipt = {
+    receipt = _input_manifest(plan)
+    (stage / "input-manifest.json").write_text(
+        json.dumps(receipt, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
+    stage.rename(output)
+    return receipt
+
+
+def _input_manifest(plan: InputPlan) -> dict[str, Any]:
+    """Derive the completion receipt from verified input bytes and effective limits."""
+    return {
         "status": "complete",
         "contract_version": 1,
-        "source_run_sha256": expected_summary_sha256,
+        "source_run_sha256": plan.run.summary_sha256,
         "mapped_buildings": plan.run.summary["mapped_buildings"],
         "payload_bytes": plan.payload_bytes,
         "files": plan.files,
@@ -148,8 +158,25 @@ def stage_input(path: Path, expected_summary_sha256: str, output: Path) -> dict[
         },
         "aws_api_or_upload": False,
     }
-    (stage / "input-manifest.json").write_text(
-        json.dumps(receipt, indent=2, allow_nan=False) + "\n", encoding="utf-8"
-    )
-    stage.rename(output)
-    return receipt
+
+
+def load_prepared_input(path: Path, expected_summary_sha256: str) -> InputPlan:
+    """Verify both the prepared receipt and its source-pinned payload before Spark."""
+    path = path.resolve()
+    if path.name.startswith(".input-"):
+        raise ValueError("Use the requested completed input directory, not unpublished staging")
+    manifest_path = path / "input-manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("Prepared input requires a regular completion manifest")
+    with manifest_path.open("rb") as source:
+        content = source.read(MAX_SUMMARY_BYTES + 1)
+    if len(content) > MAX_SUMMARY_BYTES:
+        raise ValueError("Prepared input manifest exceeds the byte limit")
+    manifest = json.loads(content)
+    plan = inspect_input(path, expected_summary_sha256)
+    # Canonical JSON distinguishes numeric/boolean types but permits key/whitespace changes.
+    if json.dumps(manifest, sort_keys=True, allow_nan=False) != json.dumps(
+        _input_manifest(plan), sort_keys=True, allow_nan=False
+    ):
+        raise ValueError("Prepared input manifest differs from its verified payload")
+    return plan
