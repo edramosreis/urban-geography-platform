@@ -27,8 +27,11 @@ class MemoryS3:
         self.requests: list[dict[str, Any]] = []
         self.bodies: list[ShortBody] = []
         self.response_change = None
+        self.closed = False
 
     def get_object(self, **request):
+        if self.closed:
+            raise RuntimeError("The object client is closed")
         self.requests.append(request)
         key = request["Key"]
         if key not in self.objects:
@@ -41,3 +44,6 @@ class MemoryS3:
         if self.response_change is not None:
             self.response_change(response)
         return response
+
+    def close(self):
+        self.closed = True

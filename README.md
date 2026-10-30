@@ -552,7 +552,7 @@ For this bounded pilot, the driver reads the verified Parquet rows with PyArrow
 and creates a Spark DataFrame with the explicit fact schema. Spark distributes
 the rows; executors need no access to the driver's local input paths. This
 driver materialization is limited to the prepared pilot contract, not a large
-dataset ingestion path. Input upload/staging, job resources and managed Glue
+dataset ingestion path. Software/input uploads, job resources and managed Glue
 validation remain separate work.
 
 
@@ -567,6 +567,27 @@ the received sizes/hashes, and publishes a fresh prepared local folder.
 The transfer records returned object version IDs and closes every response body.
 The existing prepared-input reader validates the restored folder before it is
 published. No bucket listing, upload, client construction or Spark startup occurs
-in this function. A real SDK client and its endpoint/timeouts/retry policy must be
-configured by the caller. The current validation uses an in-memory object client
-and real local Iceberg; live S3 and managed job integration remain separate work.
+in this function. The configured SDK factory and S3 writer entry point below
+supply the client policy. HTTP/IAM behavior and managed execution remain to be
+validated.
+
+
+### S3 writer bootstrap and SDK policy
+
+scripts/run_glue_s3_writer.py connects verified S3 retrieval to the writer.
+It requires --summary-sha256, --manifest-sha256, --deployment-name and --account-id;
+--scratch-root defaults to /tmp. A fresh temporary input folder is verified before
+the writer obtains its Spark session. The S3 client closes before publication;
+the owned input folder is removed after success or failure.
+
+The optional managed-client factory requires the Glue 5.1 provided boto3 and
+botocore 1.40.61. It fixes eu-west-1, TLS verification, SigV4, virtual addressing,
+5-second connect and 10-second read timeouts, one connection slot and one total
+request attempt. Configured endpoint URL overrides are ignored. These socket/
+attempt settings do not replace an overall job timeout or spending limits.
+
+The normal pipeline dependencies/image are unchanged. scripts/check_glue_sdk.py
+checks the optional SDK using dummy credentials and botocore.Stubber; it needs
+the pinned SDK available separately. Offline checks validate real SDK request
+shapes and the local Iceberg flow. Live S3, IAM, uploads, job resources and
+managed Glue startup remain unvalidated.
