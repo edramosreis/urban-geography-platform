@@ -25,9 +25,11 @@ INFRA_FILES = {
     "infra/aws/versions.tf",
     "infra/aws/variables.tf",
     "infra/aws/main.tf",
+    "infra/aws/iam.tf",
     "infra/aws/outputs.tf",
     "infra/aws/.terraform.lock.hcl",
     "infra/aws/tests/foundation.tftest.hcl",
+    "infra/aws/tests/iam.tftest.hcl",
 }
 PUBLIC_PREFIXES = ("src/", "tests/", "scripts/", "configs/", ".github/workflows/")
 PRIVATE_COMPONENTS = {
