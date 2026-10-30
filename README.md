@@ -591,3 +591,25 @@ checks the optional SDK using dummy credentials and botocore.Stubber; it needs
 the pinned SDK available separately. Offline checks validate real SDK request
 shapes and the local Iceberg flow. Live S3, IAM, uploads, job resources and
 managed Glue startup remain unvalidated.
+
+
+### Frozen Glue release and controlled delivery
+
+scripts/prepare_glue_release.py assembles the current verified Python bundle,
+managed job script, four pinned JARs and prepared pilot input into a fresh local
+folder. It rechecks the archived project against current source and dependencies
+against uv.lock. release.json records exact hashes, sizes, derived S3 locations
+and proposed Glue arguments; its SHA256 is the explicit delivery pin.
+
+scripts/upload_glue_release.py --release PATH --release-sha256 SHA256 prints the
+verified plan by default and constructs no SDK client. Its explicit --execute
+mode uploads only the listed runtime/input objects using create-only conditional
+writes, expected bucket ownership, SHA256 checksums and SSE-S3 encryption. Each
+object must pass bounded readback with a version ID. Existing matching bytes are
+reused; mismatches fail. The input manifest and release completion record follow
+their payloads. Partial uploads are retained for an explicit retry.
+
+The uploader does not create buckets, IAM roles, Glue jobs or Iceberg tables.
+scripts/check_glue_delivery.py checks create/replay/error requests against the
+pinned SDK using Stubber and dummy credentials without AWS traffic. Managed Glue
+installation, live HTTP/IAM behavior and deployment remain unvalidated.

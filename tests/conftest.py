@@ -86,3 +86,10 @@ def history_run_factory(tmp_path):
         return load_completed_run(root)
 
     return make
+
+
+@pytest.fixture
+def frozen(history_run_factory, tmp_path, monkeypatch):
+    from glue_release_fixtures import make_frozen
+
+    return make_frozen(history_run_factory, tmp_path, monkeypatch)
