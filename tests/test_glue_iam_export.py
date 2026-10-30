@@ -84,3 +84,29 @@ def test_job_export_preserves_the_exact_pinned_manifest_bytes(frozen, line_endin
 def test_iam_only_export_leaves_job_omitted(frozen):
     result = PREPARE(frozen.path, frozen.pin, frozen.path.parent / "iam.tfvars.json")
     assert "glue_job_release_json" not in result
+
+
+def test_synthetic_job_fixture_matches_the_current_frozen_recipe():
+    from urban_geography.glue_release import render_release
+
+    fixture = SCRIPT.parents[1] / "tests/fixtures/glue_job_release.json"
+    manifest = json.loads(fixture.read_text())
+    assert render_release(manifest["identity"]) == manifest
+    assert manifest["identity"]["files"]["input/summary.json"]["bytes"] == 1
+
+
+@pytest.mark.parametrize("drift", ["changed", "oversized"])
+def test_job_export_rechecks_the_manifest_after_inventory_validation(frozen, monkeypatch, drift):
+    original = PREPARE.__globals__["delivery_plan"]
+
+    def mutate_after_validation(*args):
+        result = original(*args)
+        content = b"changed" if drift == "changed" else b"x" * (1024 * 1024 + 1)
+        (frozen.path / "release.json").write_bytes(content)
+        return result
+
+    monkeypatch.setitem(PREPARE.__globals__, "delivery_plan", mutate_after_validation)
+    output = frozen.path.parent / "not-created" / "job.tfvars.json"
+    with pytest.raises(ValueError, match="changed before job export"):
+        PREPARE(frozen.path, frozen.pin, output, include_job=True)
+    assert not output.exists() and not output.parent.exists()

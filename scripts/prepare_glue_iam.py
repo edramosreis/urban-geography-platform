@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from urban_geography.glue_delivery import delivery_plan
-from urban_geography.glue_input import PROJECT_ROOT
+from urban_geography.glue_input import MAX_SUMMARY_BYTES, PROJECT_ROOT
 from urban_geography.glue_release import load_release
 
 
@@ -34,8 +34,9 @@ def prepare(release: Path, pin: str, output: Path, *, include_job: bool = False)
         },
     }
     if include_job:
-        content = (release / "release.json").read_bytes()
-        if hashlib.sha256(content).hexdigest() != pin:
+        with (release / "release.json").open("rb") as source:
+            content = source.read(MAX_SUMMARY_BYTES + 1)
+        if len(content) > MAX_SUMMARY_BYTES or hashlib.sha256(content).hexdigest() != pin:
             raise ValueError("Release manifest changed before job export")
         result["glue_job_release_json"] = content.decode("utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)

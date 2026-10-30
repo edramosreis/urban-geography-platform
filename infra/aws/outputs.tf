@@ -24,11 +24,26 @@ output "release_delivery_policy_arn" {
 }
 
 output "glue_writer_role_arn" {
-  description = "Execution role for the future job; this root currently creates no job."
+  description = "Execution role for the optional, separately approved pilot job."
   value       = try(aws_iam_role.glue_writer[0].arn, null)
 }
 
 output "glue_log_group_prefix" {
   description = "The future job must set --custom-logGroup-prefix to this value."
   value       = var.glue_release == null ? null : local.glue_log_prefix
+}
+
+
+output "glue_job_name" {
+  description = "Optional job definition; no run is started by this configuration."
+  value       = try(aws_glue_job.pilot[0].name, null)
+}
+
+output "glue_job_deployment_policy_arn" {
+  description = "Unattached policy for one job and exact-role PassRole; grants no StartJobRun."
+  value       = try(aws_iam_policy.glue_job_deployment[0].arn, null)
+}
+
+output "glue_job_scratch_uri" {
+  value = local.job_enabled ? "s3://${local.bucket_names["lake"]}/${local.scratch_prefix}/" : null
 }

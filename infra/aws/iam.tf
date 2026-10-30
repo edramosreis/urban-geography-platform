@@ -53,7 +53,7 @@ locals {
   }
   writer_policy = {
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid       = "ReadExactRelease"
         Effect    = "Allow"
@@ -105,7 +105,25 @@ locals {
           "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:${local.glue_log_prefix}/${kind}:log-stream:*"
         ]
       },
-    ]
+      ], [for statement in [
+        {
+          Sid       = "UseReleaseScratch"
+          Effect    = "Allow"
+          Action    = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
+          Resource  = "arn:aws:s3:::${local.bucket_names["lake"]}/${local.scratch_prefix}/*"
+          Condition = local.same_bucket_owner
+        },
+        {
+          Sid      = "ListReleaseScratch"
+          Effect   = "Allow"
+          Action   = "s3:ListBucket"
+          Resource = "arn:aws:s3:::${local.bucket_names["lake"]}"
+          Condition = {
+            StringEquals = { "s3:ResourceAccount" = var.aws_account_id }
+            StringLike   = { "s3:prefix" = [local.scratch_prefix, "${local.scratch_prefix}/*"] }
+          }
+        },
+    ] : statement if local.job_enabled])
   }
 }
 

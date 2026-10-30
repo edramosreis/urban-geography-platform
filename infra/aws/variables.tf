@@ -84,3 +84,21 @@ variable "glue_release" {
     error_message = "Use 10..33 exact, safe keys for this release and pilot input, including all required software/control files."
   }
 }
+
+
+variable "glue_job_release_json" {
+  description = "Optional exact pinned release.json bytes from --include-job; null creates no job."
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.glue_job_release_json == null ? true : (
+      var.glue_release == null ? false : (
+        length(var.glue_job_release_json) <= 1048576 &&
+        sha256(var.glue_job_release_json) == var.glue_release.manifest_sha256 &&
+        can(jsondecode(var.glue_job_release_json))
+      )
+    )
+    error_message = "Use exact, valid release JSON matching the explicit IAM manifest pin; IAM inputs are required."
+  }
+}

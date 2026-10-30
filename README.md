@@ -632,3 +632,24 @@ The future job must use the exported log-group prefix. Delivery identity
 attachment, job definition, restricted PassRole and actual AWS enforcement remain
 separate work. The configuration is tested with mocked plans; it has not been
 applied and does not authorize uploads or jobs.
+
+
+### Optional pinned Glue job definition
+
+Adding --include-job to scripts/prepare_glue_iam.py exports the exact release
+manifest bytes alongside the IAM inputs. Terraform checks their explicit hash
+and release scope before defining the optional Glue 5.1 Spark job. IAM-only
+exports and the original foundation still omit the job by default.
+
+The proposed job uses two G.1X workers, a ten-minute timeout, zero retries,
+one concurrent run and no queuing. Its frozen script, software/input arguments,
+logging settings and release-specific scratch location are non-overridable
+job arguments. Worker/timeout fields are job settings; AWS StartJobRun can
+supply per-run overrides, so these settings are not a spending cap.
+
+A separate unattached deployment policy covers only this job and PassRole for
+its exact Glue execution role. It grants no StartJobRun permission. There are
+no schedules or triggers. Applying this configuration, granting run permission
+and launching jobs remain separate approved steps. The new definition is tested
+with mocked plans, including the retained release; managed startup remains
+unvalidated.
