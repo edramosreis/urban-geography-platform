@@ -42,3 +42,45 @@ variable "max_query_scan_bytes" {
     error_message = "The per-query cutoff must be an integer between 10 MiB and 100 MiB."
   }
 }
+
+
+variable "glue_release" {
+  description = "Optional verified release descriptor from prepare_glue_iam.py; null creates no IAM resources."
+  type = object({
+    release_id      = string
+    manifest_sha256 = string
+    summary_sha256  = string
+    object_keys     = set(string)
+  })
+  default = null
+
+  validation {
+    condition = var.glue_release == null ? true : alltrue([
+      for pin in [var.glue_release.release_id, var.glue_release.manifest_sha256, var.glue_release.summary_sha256] :
+      can(regex("^[0-9a-f]{64}$", pin))
+    ])
+    error_message = "Release, manifest and summary identities must be lowercase SHA256 values."
+  }
+
+  validation {
+    condition = var.glue_release == null ? true : (
+      length(var.glue_release.object_keys) >= 10 && length(var.glue_release.object_keys) <= 33 &&
+      alltrue([for key in var.glue_release.object_keys : length(key) <= 512 && (
+        contains(local.release_jar_keys, key) ||
+        can(regex("^runtime/releases/${var.glue_release.release_id}/(run_glue_s3_writer[.]py|urban-geography[.]gluewheels[.]zip|release[.]json)$", key)) ||
+        can(regex("^inputs/${var.glue_release.summary_sha256}/(summary[.]json|input-manifest[.]json|(building_proximity|grid_proximity)/[A-Za-z0-9][A-Za-z0-9._-]*[.]parquet)$", key))
+      )]) &&
+      length(setsubtract(toset(concat(local.release_jar_keys, [
+        "runtime/releases/${var.glue_release.release_id}/run_glue_s3_writer.py",
+        "runtime/releases/${var.glue_release.release_id}/urban-geography.gluewheels.zip",
+        "runtime/releases/${var.glue_release.release_id}/release.json",
+        "inputs/${var.glue_release.summary_sha256}/summary.json",
+        "inputs/${var.glue_release.summary_sha256}/input-manifest.json",
+      ])), var.glue_release.object_keys)) == 0 &&
+      anytrue([for key in var.glue_release.object_keys :
+        startswith(key, "inputs/${var.glue_release.summary_sha256}/building_proximity/")
+      ])
+    )
+    error_message = "Use 10..33 exact, safe keys for this release and pilot input, including all required software/control files."
+  }
+}

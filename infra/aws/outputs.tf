@@ -16,3 +16,19 @@ output "workgroup_name" {
   description = "Created disabled. Enabling and executing queries need separate trial approval."
   value       = aws_athena_workgroup.analytics.name
 }
+
+
+output "release_delivery_policy_arn" {
+  description = "Unattached policy; an approved uploader identity must be chosen separately."
+  value       = try(aws_iam_policy.release_delivery[0].arn, null)
+}
+
+output "glue_writer_role_arn" {
+  description = "Execution role for the future job; this root currently creates no job."
+  value       = try(aws_iam_role.glue_writer[0].arn, null)
+}
+
+output "glue_log_group_prefix" {
+  description = "The future job must set --custom-logGroup-prefix to this value."
+  value       = var.glue_release == null ? null : local.glue_log_prefix
+}

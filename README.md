@@ -613,3 +613,22 @@ The uploader does not create buckets, IAM roles, Glue jobs or Iceberg tables.
 scripts/check_glue_delivery.py checks create/replay/error requests against the
 pinned SDK using Stubber and dummy credentials without AWS traffic. Managed Glue
 installation, live HTTP/IAM behavior and deployment remain unvalidated.
+
+
+### Release-scoped IAM configuration
+
+scripts/prepare_glue_iam.py --release PATH --release-sha256 SHA256 --output
+PRIVATE.tfvars.json exports Terraform inputs from the verified release. The file
+contains the target, explicit identity pins and exact object keys; keep it local.
+
+The optional glue_release input in infra/aws defines an unattached delivery
+policy and a separate Glue service role. Delivery allows PUT/GET only on listed
+objects and denies unencrypted/non-conditional writes and deletion of runtime/
+input objects. Execution reads those files and confines table storage writes to
+warehouse/building_proximity/, with catalog permissions for that table and
+seven-day dedicated logs. Omitting glue_release creates no IAM/log resources.
+
+The future job must use the exported log-group prefix. Delivery identity
+attachment, job definition, restricted PassRole and actual AWS enforcement remain
+separate work. The configuration is tested with mocked plans; it has not been
+applied and does not authorize uploads or jobs.
