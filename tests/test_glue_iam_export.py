@@ -63,3 +63,24 @@ def test_export_refuses_overwrite_or_unsafe_locations(frozen, monkeypatch, kind)
         assert output.read_text() == "keep"
     else:
         assert not output.exists()
+
+
+@pytest.mark.parametrize("line_ending", ["lf", "crlf"])
+def test_job_export_preserves_the_exact_pinned_manifest_bytes(frozen, line_ending):
+    import hashlib
+
+    content = (frozen.path / "release.json").read_bytes()
+    if line_ending == "crlf":
+        content = json.dumps(frozen.manifest, indent=2).replace("\n", "\r\n").encode()
+        (frozen.path / "release.json").write_bytes(content)
+    pin = hashlib.sha256(content).hexdigest()
+    output = frozen.path.parent / "job.tfvars.json"
+    result = PREPARE(frozen.path, pin, output, include_job=True)
+    assert result["glue_job_release_json"].encode() == content
+    assert result["glue_release"]["manifest_sha256"] == pin
+    assert json.loads(output.read_text())["glue_job_release_json"].encode() == content
+
+
+def test_iam_only_export_leaves_job_omitted(frozen):
+    result = PREPARE(frozen.path, frozen.pin, frozen.path.parent / "iam.tfvars.json")
+    assert "glue_job_release_json" not in result

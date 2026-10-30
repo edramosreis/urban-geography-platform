@@ -1,6 +1,7 @@
 """Export private Terraform IAM inputs from an explicitly pinned local release."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from urban_geography.glue_input import PROJECT_ROOT
 from urban_geography.glue_release import load_release
 
 
-def prepare(release: Path, pin: str, output: Path) -> dict[str, Any]:
+def prepare(release: Path, pin: str, output: Path, *, include_job: bool = False) -> dict[str, Any]:
     output = output.resolve()
     if output.exists() or not output.name.endswith(".tfvars.json"):
         raise ValueError("Use a fresh private .tfvars.json file")
@@ -32,6 +33,11 @@ def prepare(release: Path, pin: str, output: Path) -> dict[str, Any]:
             "object_keys": [item["key"] for item in plan["objects"]],
         },
     }
+    if include_job:
+        content = (release / "release.json").read_bytes()
+        if hashlib.sha256(content).hexdigest() != pin:
+            raise ValueError("Release manifest changed before job export")
+        result["glue_job_release_json"] = content.decode("utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(result, indent=2) + "\n")
@@ -43,8 +49,9 @@ def main() -> None:
     parser.add_argument("--release", type=Path, required=True)
     parser.add_argument("--release-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--include-job", action="store_true")
     args = parser.parse_args()
-    result = prepare(args.release, args.release_sha256, args.output)
+    result = prepare(args.release, args.release_sha256, args.output, include_job=args.include_job)
     print(
         json.dumps(
             {
