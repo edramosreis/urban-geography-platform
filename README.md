@@ -554,3 +554,19 @@ the rows; executors need no access to the driver's local input paths. This
 driver materialization is limited to the prepared pilot contract, not a large
 dataset ingestion path. Input upload/staging, job resources and managed Glue
 validation remain separate work.
+
+
+### Bounded S3 input retrieval
+
+urban_geography.glue_s3_input.download_prepared_input accepts a caller-supplied
+S3 client plus explicit summary/manifest SHA256 pins and the reviewed deployment
+target. It reads only the manifest and exact listed keys under
+inputs/SUMMARY_SHA256/, uses bounded GET ranges and ExpectedBucketOwner, verifies
+the received sizes/hashes, and publishes a fresh prepared local folder.
+
+The transfer records returned object version IDs and closes every response body.
+The existing prepared-input reader validates the restored folder before it is
+published. No bucket listing, upload, client construction or Spark startup occurs
+in this function. A real SDK client and its endpoint/timeouts/retry policy must be
+configured by the caller. The current validation uses an in-memory object client
+and real local Iceberg; live S3 and managed job integration remain separate work.
