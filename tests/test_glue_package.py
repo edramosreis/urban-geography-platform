@@ -126,3 +126,45 @@ def test_real_project_wheel_build_and_isolated_offline_install(tmp_path):
     assert json.loads((output / "manifest.json").read_text()) == receipt
     assert (output / "wheels" / receipt["wheel"]["filename"]).is_file()
     assert not list(tmp_path.glob(".package-*"))
+
+
+def test_release_rechecks_archived_project_against_current_source(
+    tiny_project, tmp_path, monkeypatch
+):
+    import urban_geography.glue_release as release
+    from urban_geography.glue_bundle import project_requirements, write_archive
+    from urban_geography.glue_dependencies import digest
+
+    inputs, entries = wheel_entries(tiny_project)
+    wheel = write_wheel(tmp_path / "urban_geography-0.1.0-py3-none-any.whl", entries)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    archive = bundle / "urban-geography.gluewheels.zip"
+    members = write_archive([wheel], project_requirements("", "0.1.0", digest(wheel)), archive)
+    (tiny_project / "uv.lock").write_text("package=[]")
+    plan = {"requirements": "", "input_sha256": {}, "pins": {}}
+    monkeypatch.setattr(release, "export_dependencies", lambda root: plan)
+    checked = dict.fromkeys(
+        (
+            "all_package_versions_match",
+            "provided_spark_and_py4j_preserved",
+            "sql_resources_match",
+            "native_library_operations_pass",
+            "fresh_venv_without_system_site_packages",
+        ),
+        True,
+    ) | {"spark_started": False}
+    manifest = {
+        "status": "complete",
+        "bundle": {
+            "sha256": digest(archive),
+            "bytes": archive.stat().st_size,
+            "members_sha256": members,
+        },
+        "installed_bundle_check": checked,
+    }
+    (bundle / "manifest.json").write_text(json.dumps(manifest))
+    release.verify_bundle(tiny_project, bundle)
+    (tiny_project / "src/urban_geography/__init__.py").write_text("# changed since build")
+    with pytest.raises(ValueError, match="differs from source"):
+        release.verify_bundle(tiny_project, bundle)
