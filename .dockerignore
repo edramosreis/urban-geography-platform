@@ -49,3 +49,11 @@ _netrc
 *.tfplan*
 terraform.tfplan
 crash.log
+
+# Private dbt connection settings and generated artifacts
+profiles.yml
+user.yml
+.dbt/
+target/
+logs/
+dbt_packages/

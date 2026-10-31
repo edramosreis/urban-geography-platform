@@ -33,6 +33,16 @@ INFRA_FILES = {
     "infra/aws/tests/iam.tftest.hcl",
     "infra/aws/tests/job.tftest.hcl",
 }
+# Exact dbt tooling/scaffold files only; profiles, targets and logs stay private.
+ANALYTICS_FILES = {
+    "analytics/athena/pyproject.toml",
+    "analytics/athena/uv.lock",
+    "analytics/athena/dbt_project.yml",
+    "analytics/athena/models/sources.yml",
+    "analytics/athena/models/schema.yml",
+    "analytics/athena/models/stg_building_proximity.sql",
+    "analytics/athena/tests/gold_invariants.sql",
+}
 PUBLIC_PREFIXES = ("src/", "tests/", "scripts/", "configs/", ".github/workflows/")
 PRIVATE_COMPONENTS = {
     "docs",
@@ -76,7 +86,7 @@ PRIVATE_SUFFIXES = {
 
 
 def is_publishable(path: str) -> bool:
-    if path in ROOT_FILES or path in INFRA_FILES:
+    if path in ROOT_FILES or path in INFRA_FILES or path in ANALYTICS_FILES:
         return True
     parts = PurePosixPath(path).parts
     if not parts or ".." in parts or path.startswith("/"):

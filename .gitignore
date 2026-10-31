@@ -67,3 +67,11 @@ Thumbs.db
 desktop.ini
 *.swp
 *.swo
+
+# Private dbt connection settings and generated artifacts
+profiles.yml
+user.yml
+.dbt/
+target/
+logs/
+dbt_packages/
