@@ -679,3 +679,23 @@ These control-plane helpers live under scripts and are not included in the worke
 wheel. scripts/check_glue_control.py validates the pinned SDK offline with Stubber,
 dummy credentials and fake time. No new run permission is granted by these tools;
 actual trial identity, resource/cost approval and live validation remain required.
+
+
+### Athena dbt project preparation
+
+analytics/athena locks dbt-core 1.12.6 and dbt-athena 1.11.1 in a separate
+Python 3.11 Linux environment. It is not included in the Spark worker wheel.
+
+scripts/prepare_dbt_project.py requires an explicit source schema, Iceberg snapshot
+ID, source-run SHA256 and fresh output under artifacts. It prepares a staging
+model and generates grid/release models from the same SQL used by local Gold
+reports. The staging model is ephemeral; the Gold models are configured as views.
+Preparation writes local files only. The supplied hash labels the snapshot;
+it does not independently establish its provenance.
+
+scripts/check_dbt_project.py uses the isolated tooling environment to parse that
+prepared project with the real Athena adapter, dummy connection settings and
+blocked Python network calls. It verifies the dependency graph and records three
+models, one source and seven parsed data tests. Parsing does not execute the SQL
+or those data tests. Athena execution, verified snapshot provenance, a scoped live
+profile, query limits/permissions and cross-engine readback remain separate work.
