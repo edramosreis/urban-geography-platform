@@ -47,3 +47,9 @@ output "glue_job_deployment_policy_arn" {
 output "glue_job_scratch_uri" {
   value = local.job_enabled ? "s3://${local.bucket_names["lake"]}/${local.scratch_prefix}/" : null
 }
+
+
+output "athena_reader_policy_arn" {
+  description = "Unattached policy; runner identity, attachment and queries need separate approval."
+  value       = try(aws_iam_policy.athena_reader[0].arn, null)
+}

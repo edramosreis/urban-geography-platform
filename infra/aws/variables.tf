@@ -102,3 +102,10 @@ variable "glue_job_release_json" {
     error_message = "Use exact, valid release JSON matching the explicit IAM manifest pin; IAM inputs are required."
   }
 }
+
+
+variable "enable_athena_reader_policy" {
+  description = "Prepare an unattached pilot read/query policy; does not enable the workgroup or authorize execution."
+  type        = bool
+  default     = false
+}
