@@ -699,3 +699,20 @@ blocked Python network calls. It verifies the dependency graph and records three
 models, one source and seven parsed data tests. Parsing does not execute the SQL
 or those data tests. Athena execution, verified snapshot provenance, a scoped live
 profile, query limits/permissions and cross-engine readback remain separate work.
+
+
+### Writer snapshot readback
+
+scripts/writer_readback.py verifies an explicitly pinned writer publication
+receipt against the prepared input and a configured Iceberg catalog. It checks
+target/settings, schema, provenance and bounded snapshot statistics, reads the
+exact snapshot and compares all fact rows with the verified input. Metadata,
+input and receipt are checked again before it returns a binding for dbt.
+The reader owns and stops its session and performs no catalog/table writes.
+
+scripts/check_writer_readback.py demonstrates this path using retained pilot
+input and a fresh local HadoopCatalog warehouse under artifacts. It runs the
+existing writer, verifies the output in a separate reader session and prepares
+a dbt fixture directly from the observed snapshot ID. Its receipts keep live
+AWS/Athena and writer-job identity verification separate. It does not configure
+an AWS session, submit jobs or run dbt models/data tests in Athena.
