@@ -1,0 +1,12 @@
+name: urban_geo_athena
+version: 0.1.0
+config-version: 2
+require-dbt-version: ["=1.12.6"]
+profile: urban_geo_athena
+model-paths: [models]
+test-paths: [tests]
+models:
+  urban_geo_athena:
+    +materialized: view
+    stg_building_proximity:
+      +materialized: ephemeral

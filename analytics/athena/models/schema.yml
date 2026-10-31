@@ -1,0 +1,24 @@
+version: 2
+models:
+  - name: stg_building_proximity
+    description: >-
+      One immutable pilot snapshot. Building counts are not population;
+      proximity is straight-line distance, not walking access. A null distance
+      means no park found within the threshold, not zero metres.
+    columns:
+      - name: building_id
+        data_tests: [not_null, unique]
+      - name: within_threshold
+        data_tests: [not_null]
+      - name: grid_id
+        data_tests: [not_null]
+      - name: source_release
+        data_tests: [not_null]
+      - name: area_id
+        data_tests: [not_null]
+  - name: grid_proximity
+    description: Counts and share within the threshold for occupied pilot grid cells.
+  - name: release_proximity
+    description: >-
+      Pilot totals with share computed from summed counts, not averaged cell shares.
+      This selected pilot is not municipality-wide or full grid-cell coverage.

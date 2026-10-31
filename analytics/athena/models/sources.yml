@@ -1,0 +1,8 @@
+version: 2
+sources:
+  - name: lakehouse
+    database: awsdatacatalog
+    schema: "{{ var('source_schema') }}"
+    tables:
+      - name: building_proximity
+        description: Immutable pilot facts; the staging model pins an Iceberg snapshot.
