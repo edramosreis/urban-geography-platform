@@ -1,0 +1,10 @@
+[project]
+name = "urban-geography-athena-tooling"
+version = "0.1.0"
+description = "Isolated dbt Athena tooling; not part of the Spark worker wheel"
+requires-python = ">=3.11,<3.12"
+dependencies = ["dbt-core==1.12.6", "dbt-athena==1.11.1"]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
