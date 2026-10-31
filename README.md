@@ -716,3 +716,32 @@ existing writer, verifies the output in a separate reader session and prepares
 a dbt fixture directly from the observed snapshot ID. Its receipts keep live
 AWS/Athena and writer-job identity verification separate. It does not configure
 an AWS session, submit jobs or run dbt models/data tests in Athena.
+
+
+### Athena read/query preparation
+
+scripts/athena_read_plan.py prepares a credential-free dbt profile, one fixed
+snapshot-pinned Gold SELECT, its request template and private Terraform inputs
+under a fresh artifacts directory. It reuses the canonical grid/release SQL,
+limits the returned release groups to two, disables result reuse and records
+an explicit 10..100 MiB per-query workgroup scan cutoff. It has no execution mode.
+The supplied snapshot/run identifiers remain unverified until live readback.
+
+Its workgroup preflight makes one GetWorkGroup request and requires the named,
+separately enabled workgroup with enforced engine 3, exact scan cutoff and the
+expected result location, bucket-owner and encryption settings. It never enables a workgroup
+or submits a query. Caller identity, provenance, cumulative budgets, persisted
+idempotency tokens, monitoring/cancellation and result acceptance remain future
+execution gates; the per-query cutoff is not a total spending cap.
+
+infra/aws can optionally define an unattached Athena reader policy with
+enable_athena_reader_policy. It scopes query APIs to one workgroup, reads to the
+pilot catalog/table and S3 prefix, and result writes to the dedicated queries
+prefix. Explicit denies preserve source objects and the source catalog entry.
+It creates no runner role/attachment, grants no workgroup-update permission,
+and leaves the workgroup configured disabled. It does not grant the additional
+catalog permissions needed to build dbt views. No configuration has been applied.
+
+scripts/check_athena_read_plan.py checks the real locked adapter's profile
+credentials, SDK request shape and Stubber responses against a mocked Terraform
+contract. It performs no AWS requests and does not execute Athena SQL.
