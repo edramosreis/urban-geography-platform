@@ -27,11 +27,13 @@ INFRA_FILES = {
     "infra/aws/main.tf",
     "infra/aws/iam.tf",
     "infra/aws/job.tf",
+    "infra/aws/athena.tf",
     "infra/aws/outputs.tf",
     "infra/aws/.terraform.lock.hcl",
     "infra/aws/tests/foundation.tftest.hcl",
     "infra/aws/tests/iam.tftest.hcl",
     "infra/aws/tests/job.tftest.hcl",
+    "infra/aws/tests/athena.tftest.hcl",
 }
 # Exact dbt tooling/scaffold files only; profiles, targets and logs stay private.
 ANALYTICS_FILES = {

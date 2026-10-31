@@ -78,11 +78,13 @@ def test_private_paths_cannot_enter_published_history(path):
         "infra/aws/main.tf",
         "infra/aws/iam.tf",
         "infra/aws/job.tf",
+        "infra/aws/athena.tf",
         "infra/aws/outputs.tf",
         "infra/aws/.terraform.lock.hcl",
         "infra/aws/tests/foundation.tftest.hcl",
         "infra/aws/tests/iam.tftest.hcl",
         "infra/aws/tests/job.tftest.hcl",
+        "infra/aws/tests/athena.tftest.hcl",
     ],
 )
 def test_runtime_and_verification_sources_can_be_published(path):
