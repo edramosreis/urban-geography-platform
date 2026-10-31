@@ -653,3 +653,29 @@ no schedules or triggers. Applying this configuration, granting run permission
 and launching jobs remain separate approved steps. The new definition is tested
 with mocked plans, including the retained release; managed startup remains
 unvalidated.
+
+
+### Local Glue trial control
+
+scripts/run_glue_pilot.py --release PATH --release-sha256 SHA256 prints a verified
+plan by default. Its separately approved --execute mode requires a fresh --output
+under this checkout's artifacts directory. It checks the saved Glue job and the
+versioned, pinned S3 completion record before submitting one fixed start request.
+No arbitrary per-run arguments, worker counts or retry IDs are accepted.
+
+The controller flushes intent and run identity to an append-only local journal,
+observes only that run and requests a stop on drift, observation failure or its
+watchdog limit. Stop acknowledgement and confirmed terminal state remain distinct.
+An uncertain submission is never automatically retried; reconcile job history
+before another attempt. Failed/unconfirmed outcomes exit nonzero and retain evidence.
+
+The proposed watch window is 15 minutes / 90 observations, followed by at most
+2 minutes / 12 stop observations, using ten-second intervals. These controls do
+not establish an account spending cap or guarantee shutdown if the controlling
+process or service is unavailable. SUCCEEDED records Glue status; output readback
+and cross-engine acceptance remain separate checks.
+
+These control-plane helpers live under scripts and are not included in the worker
+wheel. scripts/check_glue_control.py validates the pinned SDK offline with Stubber,
+dummy credentials and fake time. No new run permission is granted by these tools;
+actual trial identity, resource/cost approval and live validation remain required.
