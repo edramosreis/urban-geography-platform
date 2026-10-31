@@ -93,3 +93,10 @@ def frozen(history_run_factory, tmp_path, monkeypatch):
     from glue_release_fixtures import make_frozen
 
     return make_frozen(history_run_factory, tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def control_case(frozen):
+    from glue_control_fixtures import make_control_case
+
+    return make_control_case(frozen)

@@ -1,7 +1,5 @@
 """Read-only saved-job/release checks with no credentials, network or Spark startup."""
 
-import copy
-import io
 import json
 import runpy
 import sys
@@ -11,23 +9,6 @@ from unittest.mock import Mock
 import pytest
 from glue_control_fixtures import CONTROL as control
 from glue_control_fixtures import ROOT
-
-
-@pytest.fixture
-def control_case(frozen):
-    plan = control.load_plan(frozen.path, frozen.pin)
-    body = io.BytesIO((frozen.path / "release.json").read_bytes())
-    s3 = SimpleNamespace(
-        get_object=Mock(
-            return_value={
-                "Body": body,
-                "ContentLength": len(body.getvalue()),
-                "VersionId": "version-1",
-            }
-        )
-    )
-    glue = SimpleNamespace(get_job=Mock(return_value={"Job": copy.deepcopy(plan["job"])}))
-    return SimpleNamespace(plan=plan, body=body, s3=s3, glue=glue, frozen=frozen)
 
 
 def test_preflight_checks_the_exact_job_and_closes_the_control_body(control_case):
