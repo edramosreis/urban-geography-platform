@@ -6,7 +6,8 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -174,7 +175,7 @@ def observation(client: QueryClient, request: dict[str, Any], query_id: str) -> 
     return {"state": state, "drift": drift, "missing": missing, "data_scanned_bytes": scanned}
 
 
-def execute_attempt(
+def _execute_attempt(
     client: QueryClient,
     attempt: Attempt,
     *,
@@ -207,6 +208,24 @@ def execute_attempt(
             "Keep the saved request/token; reconcile this attempt before any new submission"
         ) from exc
 
+    return monitor_query(
+        client, attempt, query_id, intent=intent, started=started, now=now, pause=pause
+    )
+
+
+def monitor_query(
+    client: QueryClient,
+    attempt: Attempt,
+    query_id: str,
+    *,
+    intent: dict[str, Any],
+    started: float,
+    now: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+    stop_reason: str | None = None,
+) -> dict[str, Any]:
+    """Monitor a service-returned ID using the request captured before submission."""
+    plan, request = intent["plan"], intent["request"]
     stop_attempted, stop_acknowledged = False, False
     stop_deadline: float | None = None
     stop_observations = 0
@@ -287,6 +306,16 @@ def execute_attempt(
     try:
         write_once(attempt.output / "query.json", canonical({"query_id": query_id}))
         attempt.record({"event": "query_identified", "query_id": query_id})
+        if stop_reason is not None:
+            stop_deadline = now() + STOP_SECONDS
+            try:
+                last = observation(client, request, query_id)
+                attempt.record({"event": "recovery_observation", "query_id": query_id, **last})
+            except Exception as exc:
+                attempt.record(
+                    {"event": "recovery_observation_error", "error_type": type(exc).__name__}
+                )
+            return stop_and_confirm(stop_reason)
         for _ in range(MAX_OBSERVATIONS):
             if now() - started >= WATCH_SECONDS:
                 return stop_and_confirm("watchdog_limit")
@@ -311,3 +340,43 @@ def execute_attempt(
             f"Owned Athena query {query_id}; terminal confirmed: {result['terminal_confirmed']}"
         )
         raise
+
+
+@contextmanager
+def controller_lease(directory: Path) -> Iterator[None]:
+    """One live controller/recovery per original attempt; kernel releases on process exit."""
+    directory = directory.resolve()
+    if (
+        not directory.is_dir()
+        or not directory.is_relative_to(ARTIFACTS.resolve())
+        or directory == ARTIFACTS.resolve()
+    ):
+        raise ValueError("Controller lease requires an existing attempt under artifacts")
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise RuntimeError("Use the existing Linux Docker controller runtime") from exc
+    lock = directory / ".controller.lock"
+    if lock.is_symlink():
+        raise ValueError("Controller lock must not be a symlink")
+    with lock.open("a+b") as stream:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("This attempt already has an active controller or recovery") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def execute_attempt(
+    client: QueryClient,
+    attempt: Attempt,
+    *,
+    now: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """One initial submission under the same lease used by explicit recovery."""
+    with controller_lease(attempt.output):
+        return _execute_attempt(client, attempt, now=now, pause=pause)

@@ -466,3 +466,60 @@ def test_interrupt_while_recording_stop_intent_does_not_skip_stop_request(
     with pytest.raises(KeyboardInterrupt):
         run(client, attempt)
     client.stop_query_execution.assert_called_once_with(QueryExecutionId="query-001")
+
+
+def test_active_lease_refuses_another_controller_before_preflight(client, attempt):
+    with control.controller_lease(attempt.output):
+        with pytest.raises(RuntimeError, match="active controller"):
+            run(client, attempt)
+    client.get_work_group.assert_not_called()
+    client.start_query_execution.assert_not_called()
+
+
+def test_failed_owner_releases_the_kernel_lease(client, attempt):
+    with pytest.raises(ValueError):
+        with control.controller_lease(attempt.output):
+            raise ValueError("owner exited")
+    with control.controller_lease(attempt.output):
+        pass
+
+
+@pytest.mark.parametrize("state", ["SUCCEEDED", "FAILED", "CANCELLED"])
+def test_recovery_monitor_reports_already_terminal_without_a_stop(client, attempt, state):
+    client.get_query_execution.return_value = execution(attempt, state)
+    clock = Clock()
+    report = control.monitor_query(
+        client,
+        attempt,
+        "query-001",
+        intent=attempt.intent(),
+        started=clock.now(),
+        now=clock.now,
+        pause=clock.pause,
+        stop_reason="recovery_cancel",
+    )
+    assert report["terminal_confirmed"] and report["outcome"] == "recovery_cancel"
+    assert not report["result_verified"]
+    client.stop_query_execution.assert_not_called()
+    client.start_query_execution.assert_not_called()
+
+
+def test_recovery_monitor_cancels_active_query_and_confirms_termination(client, attempt):
+    client.get_query_execution.side_effect = [
+        execution(attempt, "RUNNING"),
+        execution(attempt, "CANCELLED"),
+    ]
+    clock = Clock()
+    report = control.monitor_query(
+        client,
+        attempt,
+        "query-001",
+        intent=attempt.intent(),
+        started=clock.now(),
+        now=clock.now,
+        pause=clock.pause,
+        stop_reason="recovery_cancel",
+    )
+    assert report["terminal_confirmed"] and report["stop_attempted"]
+    client.stop_query_execution.assert_called_once_with(QueryExecutionId="query-001")
+    client.start_query_execution.assert_not_called()
