@@ -19,3 +19,39 @@ def make_attempt(tmp_path, monkeypatch):
 
 def enabled_group(attempt):
     return {"WorkGroup": workgroup(attempt.intent()["plan"])}
+
+
+class Clock:
+    def __init__(self):
+        self.value = 0.0
+
+    def now(self):
+        return self.value
+
+    def pause(self, seconds):
+        self.value += seconds
+
+
+def execution(attempt, state="SUCCEEDED", **overrides):
+    request = attempt.intent()["request"]
+    query = {
+        "QueryExecutionId": "query-001",
+        "Query": request["QueryString"],
+        "WorkGroup": request["WorkGroup"],
+        "QueryExecutionContext": request["QueryExecutionContext"],
+        "StatementType": "DML",
+        "SubstatementType": "SELECT",
+        "Status": {"State": state},
+        "EngineVersion": {
+            "SelectedEngineVersion": "Athena engine version 3",
+            "EffectiveEngineVersion": "Athena engine version 3",
+        },
+        "ResultConfiguration": request["ResultConfiguration"]
+        | {"OutputLocation": request["ResultConfiguration"]["OutputLocation"] + "query-001.csv"},
+        "ResultReuseConfiguration": request["ResultReuseConfiguration"],
+        "Statistics": {
+            "DataScannedInBytes": 4096,
+            "ResultReuseInformation": {"ReusedPreviousResult": False},
+        },
+    }
+    return {"QueryExecution": query | overrides}
