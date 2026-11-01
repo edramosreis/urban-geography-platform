@@ -424,3 +424,45 @@ def test_disk_failure_during_stop_is_reported_without_blocking_cancellation(
     result = run(client, attempt)
     assert result["terminal_confirmed"] and result["journal_errors"] == ["OSError"] * 3
     client.stop_query_execution.assert_called_once()
+
+
+def test_interrupt_during_cleanup_reuses_remaining_stop_budget(client, attempt):
+    clock = Clock()
+    interrupted = False
+
+    def pause(seconds):
+        nonlocal interrupted
+        if clock.value >= control.WATCH_SECONDS and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt()
+        clock.pause(seconds)
+
+    client.get_query_execution.return_value = execution(attempt, "RUNNING")
+    with pytest.raises(KeyboardInterrupt):
+        control.execute_attempt(client, attempt, now=clock.now, pause=pause)
+    client.stop_query_execution.assert_called_once()
+    assert (
+        client.get_query_execution.call_count
+        == control.MAX_OBSERVATIONS + control.MAX_STOP_OBSERVATIONS
+    )
+    assert clock.value <= control.WATCH_SECONDS + control.STOP_SECONDS
+
+
+def test_interrupt_while_recording_stop_intent_does_not_skip_stop_request(
+    client, attempt, monkeypatch
+):
+    original = attempt.record
+    interrupted = False
+
+    def record(event):
+        nonlocal interrupted
+        if event["event"] == "stop_intent" and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt()
+        original(event)
+
+    monkeypatch.setattr(attempt, "record", record)
+    client.get_query_execution.side_effect = [TimeoutError(), execution(attempt, "CANCELLED")]
+    with pytest.raises(KeyboardInterrupt):
+        run(client, attempt)
+    client.stop_query_execution.assert_called_once_with(QueryExecutionId="query-001")

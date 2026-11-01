@@ -208,6 +208,8 @@ def execute_attempt(
         ) from exc
 
     stop_attempted, stop_acknowledged = False, False
+    stop_deadline: float | None = None
+    stop_observations = 0
     journal_errors: list[str] = []
     last: dict[str, Any] | None = None
     cap = plan["workgroup"]["Configuration"]["BytesScannedCutoffPerQuery"]
@@ -256,22 +258,22 @@ def execute_attempt(
         }
 
     def stop_and_confirm(reason: str) -> dict[str, Any]:
-        nonlocal stop_attempted, stop_acknowledged, last
+        nonlocal stop_attempted, stop_acknowledged, last, stop_deadline, stop_observations
         if last is not None and last["state"] in TERMINAL:
             return finish(reason)
-        deadline = now() + STOP_SECONDS
+        if stop_deadline is None:
+            stop_deadline = now() + STOP_SECONDS
         if not stop_attempted:
-            stop_attempted = True
             safe_record({"event": "stop_intent", "query_id": query_id, "reason": reason})
+            stop_attempted = True
             try:
                 client.stop_query_execution(QueryExecutionId=query_id)
                 stop_acknowledged = True  # API acceptance alone never proves termination.
                 safe_record({"event": "stop_acknowledged", "query_id": query_id})
             except Exception as exc:
                 safe_record({"event": "stop_error", "error_type": type(exc).__name__})
-        for _ in range(MAX_STOP_OBSERVATIONS):
-            if now() >= deadline:
-                break
+        while stop_observations < MAX_STOP_OBSERVATIONS and now() < stop_deadline:
+            stop_observations += 1
             try:
                 last = observation(client, request, query_id)
                 safe_record({"event": "stop_observation", "query_id": query_id, **last})
@@ -279,7 +281,7 @@ def execute_attempt(
                     return finish(reason)
             except Exception as exc:
                 safe_record({"event": "stop_observation_error", "error_type": type(exc).__name__})
-            pause(min(POLL_SECONDS, max(0, deadline - now())))
+            pause(min(POLL_SECONDS, max(0, stop_deadline - now())))
         return finish(reason)
 
     try:
