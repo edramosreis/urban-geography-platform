@@ -150,3 +150,24 @@ def test_result_client_opt_in_requires_a_boolean_before_credential_discovery(cas
         with clients.query_clients(session=selected, include_results=1):
             pytest.fail("No clients")
     selected.get_credentials.assert_not_called()
+
+
+def test_reader_credentials_are_explicit_hidden_and_cleared_on_exit(case):
+    selected = case[0]
+    with clients.query_resources(session=selected) as resources:
+        environment = resources.reader_environment
+        assert environment == {
+            "AWS_ACCESS_KEY_ID": "offline-testing",
+            "AWS_SECRET_ACCESS_KEY": "offline-testing",
+            "AWS_SESSION_TOKEN": "offline-token",
+        }
+        assert "offline-testing" not in repr(resources) and "offline-token" not in repr(resources)
+    assert environment == {}
+
+
+def test_reader_credential_mapping_is_cleared_after_body_failure(case):
+    with pytest.raises(RuntimeError):
+        with clients.query_resources(session=case[0]) as resources:
+            environment = resources.reader_environment
+            raise RuntimeError("reader failed")
+    assert environment == {}

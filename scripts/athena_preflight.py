@@ -119,7 +119,8 @@ def verify_query_source(
     input_path: Path,
     writer_receipt: Path,
     writer_receipt_sha256: str,
-    session_factory: Callable[[], Any],
+    session_factory: Callable[[], Any] | None = None,
+    snapshot_reader: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Observe the caller/catalog around exact row readback; never submit or authorize SQL."""
     plan = verified_plan(plan)
@@ -128,11 +129,13 @@ def verify_query_source(
         r"[0-9a-f]{64}", writer_receipt_sha256
     ):
         raise ValueError("An independently pinned writer publication receipt is required")
+    if session_factory is None and snapshot_reader is None:
+        raise ValueError("Use an explicit reader session factory or isolated reader adapter")
     caller = caller_identity(sts, expected)
     before = catalog_state(glue, plan)
     recipe = runtime_plan(**plan["target"])
     location = recipe["warehouse"] + "building_proximity"
-    source = read_snapshot(
+    source = (snapshot_reader or read_snapshot)(
         input_path,
         plan["binding"]["source_run_sha256"],
         writer_receipt,

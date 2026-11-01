@@ -200,3 +200,20 @@ def test_changed_query_plan_rejects_before_caller_lookup(case):
     case[1].get_caller_identity.assert_not_called()
     case[2].get_table.assert_not_called()
     case[3].assert_not_called()
+
+
+def test_explicit_reader_adapter_works_without_importing_spark_in_control_environment(case):
+    plan, sts, glue, reader, options = case
+    adapter = Mock(return_value=reader.return_value)
+    options["session_factory"] = None
+    result = preflight.verify_query_source(sts, glue, plan, snapshot_reader=adapter, **options)
+    assert result["source_readback_verified"]
+    reader.assert_not_called()
+    adapter.assert_called_once()
+
+
+def test_absent_reader_adapter_and_factory_fail_before_aws_calls(case):
+    case[-1]["session_factory"] = None
+    with pytest.raises(ValueError, match="reader"):
+        run(case)
+    case[1].get_caller_identity.assert_not_called()
