@@ -119,7 +119,10 @@ def start_session(request: dict[str, Any], observed: dict[str, Any]) -> Any:
         .appName("urban-geography-readback")
         .config("spark.jars", ",".join(jars))
         .config("spark.driver.memory", "1g")
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config(
+            "spark.sql.extensions",
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        )
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.default.parallelism", "2")
         .config("spark.pyspark.python", sys.executable)
