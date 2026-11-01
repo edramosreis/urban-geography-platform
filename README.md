@@ -745,3 +745,28 @@ catalog permissions needed to build dbt views. No configuration has been applied
 scripts/check_athena_read_plan.py checks the real locked adapter's profile
 credentials, SDK request shape and Stubber responses against a mocked Terraform
 contract. It performs no AWS requests and does not execute Athena SQL.
+
+
+### dbt Gold view materialization checks
+
+infra/aws can also define a separate, standalone and unattached policy using
+`enable_dbt_view_builder_policy` (false by default). It retains the reader's
+source protections and adds database/relation discovery plus create/replace and
+Glue version maintenance for exactly grid_proximity and release_proximity.
+It grants no physical table-data writes, database creation or relation deletion.
+The workgroup remains disabled. IAM scopes relation names, not their object type
+or SQL text; whole-identity permissions still require review before a live trial.
+
+Prepared projects now include macros/require_view.sql. It refuses to replace a
+physical table with a Gold view, including when full refresh is requested.
+Existing views can be replaced; source facts remain in Iceberg. The view models
+store SQL definitions rather than separate copies of their result rows.
+
+scripts/check_dbt_views.py invokes the actual locked dbt run/materialization path
+with dummy credentials, SDK-validated synthetic responses and blocked networking.
+It checks creation, replacement/version expiry, table collisions with and without
+full refresh, and query failure. It compares compiled/submitted SQL with the pinned
+source graph and records private traces. No AWS query or dbt data test executes.
+This is an offline adapter check, not a live execution controller: dbt uses its own
+query submission/polling path. Bounded live dbt execution, result acceptance and
+teardown still need implementation and separately approved AWS validation.
