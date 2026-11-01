@@ -73,3 +73,85 @@ run "scoped_reader_policy" {
     error_message = "The query identity must preserve the source table's objects and catalog entry."
   }
 }
+
+
+run "view_builder_disabled_by_default" {
+  command = plan
+  assert {
+    condition     = length(aws_iam_policy.dbt_view_builder) == 0 && output.dbt_view_builder_policy_arn == null
+    error_message = "The foundation must omit dbt IAM by default."
+  }
+}
+
+run "standalone_two_view_builder" {
+  command = plan
+  variables { enable_dbt_view_builder_policy = true }
+
+  assert {
+    condition = (
+      length(aws_iam_policy.dbt_view_builder) == 1 &&
+      aws_iam_policy.dbt_view_builder[0].name == "urban-geo-test-dbt-view-builder" &&
+      length(jsonencode(local.dbt_view_builder_policy)) <= 6144 &&
+      length(aws_iam_policy.athena_reader) == 0 &&
+      length(aws_iam_role.glue_writer) == 0 &&
+      length(aws_iam_role_policy.glue_writer) == 0 &&
+      aws_athena_workgroup.analytics.state == "DISABLED"
+    )
+    error_message = "Builder must stand alone, remain unattached and leave the workgroup disabled."
+  }
+  assert {
+    condition = (
+      length(local.dbt_view_builder_policy.Statement) == 13 &&
+      jsonencode(slice(local.dbt_view_builder_policy.Statement, 0, 10)) == jsonencode(local.athena_reader_policy.Statement) &&
+      alltrue([for s in local.dbt_view_builder_policy.Statement : !contains(try(tolist(s.Resource), [s.Resource]), "*")]) &&
+      alltrue([for s in slice(local.dbt_view_builder_policy.Statement, 10, 13) : s.Effect == "Allow"])
+    )
+    error_message = "Builder must retain every scoped reader permission/deny without unrestricted resources."
+  }
+  assert {
+    condition = (
+      local.dbt_view_builder_policy.Statement[10].Action == "glue:GetDatabases" &&
+      toset(local.dbt_view_builder_policy.Statement[10].Resource) == toset([local.catalog_arn, local.database_arn]) &&
+      local.dbt_view_builder_policy.Statement[11].Action == "glue:GetTables" &&
+      toset(local.dbt_view_builder_policy.Statement[11].Resource) == toset(concat([local.catalog_arn, local.database_arn, local.table_arn], local.gold_view_arns)) &&
+      toset(local.gold_view_arns) == toset([
+        "arn:aws:glue:eu-west-1:123456789012:table/urban_geo_test_m4/grid_proximity",
+        "arn:aws:glue:eu-west-1:123456789012:table/urban_geo_test_m4/release_proximity"
+      ])
+    )
+    error_message = "Discovery must use one database and the source plus two exact Gold relations."
+  }
+  assert {
+    condition = (
+      toset(local.dbt_view_builder_policy.Statement[12].Action) == toset(["glue:GetTable", "glue:GetTableVersions", "glue:CreateTable", "glue:UpdateTable", "glue:DeleteTableVersion"]) &&
+      toset(local.dbt_view_builder_policy.Statement[12].Resource) == toset(concat([local.catalog_arn, local.database_arn], local.gold_view_arns)) &&
+      !contains(local.dbt_view_builder_policy.Statement[12].Resource, local.table_arn)
+    )
+    error_message = "Create/replace and version maintenance must name only two views and their ancestors, never source facts."
+  }
+  assert {
+    condition = alltrue([for s in slice(local.dbt_view_builder_policy.Statement, 10, 13) :
+      alltrue([for action in try(tolist(s.Action), [s.Action]) : startswith(action, "glue:") && !contains([
+        "glue:CreateDatabase", "glue:DeleteDatabase", "glue:DeleteTable", "glue:BatchDeleteTable"
+      ], action)])
+    ])
+    error_message = "The builder extension must grant no S3 writes, database creation/deletion or relation teardown."
+  }
+}
+
+run "reader_and_builder_are_independent" {
+  command = plan
+  variables {
+    enable_athena_reader_policy    = true
+    enable_dbt_view_builder_policy = true
+  }
+  assert {
+    condition = (
+      length(aws_iam_policy.athena_reader) == 1 && length(aws_iam_policy.dbt_view_builder) == 1 &&
+      length(local.athena_reader_policy.Statement) == 10 &&
+      !contains(local.athena_reader_policy.Statement[2].Resource, local.gold_view_arns[0]) &&
+      !contains(local.athena_reader_policy.Statement[2].Resource, local.gold_view_arns[1])
+    )
+    error_message = "Enabling dbt must not widen the independent fact-reader policy."
+  }
+}

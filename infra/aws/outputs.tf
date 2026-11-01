@@ -53,3 +53,9 @@ output "athena_reader_policy_arn" {
   description = "Unattached policy; runner identity, attachment and queries need separate approval."
   value       = try(aws_iam_policy.athena_reader[0].arn, null)
 }
+
+
+output "dbt_view_builder_policy_arn" {
+  description = "Unattached standalone dbt policy; choose and approve its identity separately."
+  value       = try(aws_iam_policy.dbt_view_builder[0].arn, null)
+}

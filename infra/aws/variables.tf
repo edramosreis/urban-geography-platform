@@ -109,3 +109,10 @@ variable "enable_athena_reader_policy" {
   type        = bool
   default     = false
 }
+
+
+variable "enable_dbt_view_builder_policy" {
+  description = "Prepare an unattached two-view dbt policy; no identity, workgroup enabling, dbt execution or teardown."
+  type        = bool
+  default     = false
+}

@@ -77,6 +77,37 @@ locals {
   }
 }
 
+
+# Separate, standalone policy: the reader remains read-only. Ordinary view models
+# need catalog discovery and create/replace/version maintenance, not S3 table writes.
+locals {
+  gold_view_names = ["grid_proximity", "release_proximity"]
+  gold_view_arns  = [for name in local.gold_view_names : "arn:aws:glue:${var.aws_region}:${var.aws_account_id}:table/${aws_glue_catalog_database.analytics.name}/${name}"]
+  dbt_view_builder_policy = {
+    Version = "2012-10-17"
+    Statement = concat(local.athena_reader_policy.Statement, [
+      {
+        Sid      = "DiscoverPilotDatabase"
+        Effect   = "Allow"
+        Action   = "glue:GetDatabases"
+        Resource = [local.catalog_arn, local.database_arn]
+      },
+      {
+        Sid      = "DiscoverPilotRelations"
+        Effect   = "Allow"
+        Action   = "glue:GetTables"
+        Resource = concat([local.catalog_arn, local.database_arn, local.table_arn], local.gold_view_arns)
+      },
+      {
+        Sid      = "BuildGoldViews"
+        Effect   = "Allow"
+        Action   = ["glue:GetTable", "glue:GetTableVersions", "glue:CreateTable", "glue:UpdateTable", "glue:DeleteTableVersion"]
+        Resource = concat([local.catalog_arn, local.database_arn], local.gold_view_arns)
+      },
+    ])
+  }
+}
+
 # No role, user or attachment: choosing a runner identity is a separate approved step.
 resource "aws_iam_policy" "athena_reader" {
   count = var.enable_athena_reader_policy ? 1 : 0
@@ -89,6 +120,22 @@ resource "aws_iam_policy" "athena_reader" {
     precondition {
       condition     = length(jsonencode(local.athena_reader_policy)) <= 6144
       error_message = "The Athena reader policy exceeds the managed IAM policy size limit."
+    }
+  }
+}
+
+# No attachment or table/view resources; applying this policy alone runs no dbt SQL.
+resource "aws_iam_policy" "dbt_view_builder" {
+  count = var.enable_dbt_view_builder_policy ? 1 : 0
+
+  name        = "${var.deployment_name}-dbt-view-builder"
+  description = "One workgroup, preserved pilot facts and two Gold view definitions; unattached."
+  policy      = jsonencode(local.dbt_view_builder_policy)
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(local.dbt_view_builder_policy)) <= 6144
+      error_message = "The dbt view builder policy exceeds the managed IAM policy size limit."
     }
   }
 }
