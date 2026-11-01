@@ -74,3 +74,10 @@ def make_case(tmp_path, monkeypatch):
         "session_factory": Mock(),
     }
     return plan, sts, glue, reader, options
+
+
+spec = importlib.util.spec_from_file_location("athena_clients", ROOT / "scripts/athena_clients.py")
+assert spec is not None and spec.loader is not None
+CLIENTS = importlib.util.module_from_spec(spec)
+sys.modules["athena_clients"] = CLIENTS
+spec.loader.exec_module(CLIENTS)

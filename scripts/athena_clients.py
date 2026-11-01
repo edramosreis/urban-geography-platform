@@ -1,0 +1,46 @@
+"""Own three query-control clients using one frozen credential snapshot; store no secrets."""
+
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from importlib import import_module
+from importlib.metadata import version
+from typing import Any
+
+from athena_read_plan import create_athena_client, tooling_sdk_pins
+
+
+@contextmanager
+def query_clients(*, session: Any = None) -> Iterator[dict[str, Any]]:
+    """Share credentials across identity/catalog/query calls and close even on partial startup."""
+    for name, pin in tooling_sdk_pins().items():
+        if version(name) != pin:
+            raise ValueError("Use the isolated analytics/athena tooling environment")
+    boto3 = import_module("boto3")
+    selected = boto3.Session(region_name="eu-west-1") if session is None else session
+    credentials = selected.get_credentials()
+    if credentials is None:
+        raise ValueError("No credentials are available for the explicitly expected caller")
+    frozen = credentials.get_frozen_credentials()
+    # Freeze in memory so a refreshing provider cannot silently switch between these clients.
+    fixed = boto3.Session(
+        aws_access_key_id=frozen.access_key,
+        aws_secret_access_key=frozen.secret_key,
+        aws_session_token=frozen.token,
+        region_name="eu-west-1",
+    )
+    with ExitStack() as owned:
+        athena = create_athena_client(session=fixed)
+        owned.callback(athena.close)
+        clients = {"athena": athena}
+        for service in ("sts", "glue"):
+            client = fixed.client(
+                service,
+                region_name="eu-west-1",
+                use_ssl=True,
+                verify=True,
+                endpoint_url=f"https://{service}.eu-west-1.amazonaws.com",
+                config=athena.meta.config,
+            )
+            owned.callback(client.close)
+            clients[service] = client
+        yield clients
