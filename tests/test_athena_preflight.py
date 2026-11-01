@@ -179,3 +179,24 @@ def test_exact_iam_user_is_supported_without_role_session_matching():
         "Arn": arn,
         "UserId": user,
     }
+
+
+def test_reader_is_delegated_to_existing_verifier_without_reimplementing_row_logic(monkeypatch):
+    module = Mock()
+    module.verify_writer_output.return_value = {"status": "verified_snapshot_readback"}
+    monkeypatch.setattr(preflight, "import_module", Mock(return_value=module))
+    result = preflight.read_snapshot("input", "pin", expected_location="s3://pilot/table")
+    preflight.import_module.assert_called_once_with("writer_readback")
+    module.verify_writer_output.assert_called_once_with(
+        "input", "pin", expected_location="s3://pilot/table"
+    )
+    assert result == {"status": "verified_snapshot_readback"}
+
+
+def test_changed_query_plan_rejects_before_caller_lookup(case):
+    case[0]["request_template"]["QueryString"] = "SELECT 1"
+    with pytest.raises(ValueError, match="recipe"):
+        run(case)
+    case[1].get_caller_identity.assert_not_called()
+    case[2].get_table.assert_not_called()
+    case[3].assert_not_called()
