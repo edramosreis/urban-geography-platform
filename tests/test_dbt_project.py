@@ -28,7 +28,7 @@ def test_preparation_records_shared_sql_and_requires_fresh_output(output):
     assert DBT.verify_project(output) == receipt
     assert receipt["binding"] == BINDING
     assert receipt["provenance_verified"] is False and receipt["athena_executed"] is False
-    assert len(receipt["files"]) == 7
+    assert len(receipt["files"]) == 8
     assert set(receipt["canonical_sql_sha256"]) == {"grid_proximity", "release_proximity"}
     before = {p: p.read_bytes() for p in output.rglob("*") if p.is_file()}
     with pytest.raises(ValueError, match="fresh"):
@@ -65,11 +65,13 @@ def test_output_cannot_escape_artifacts(output):
     assert not output.parent.exists()
 
 
-@pytest.mark.parametrize("tamper", ["model", "extra", "receipt", "canonical"])
+@pytest.mark.parametrize("tamper", ["model", "extra", "receipt", "canonical", "guard"])
 def test_stale_or_modified_project_is_rejected(output, tmp_path, monkeypatch, tamper):
     DBT.prepare_project(output, **BINDING)
     if tamper == "model":
         (output / "models/grid_proximity.sql").write_text("SELECT 1", encoding="utf-8")
+    elif tamper == "guard":
+        (output / "macros/require_view.sql").write_text("", encoding="utf-8")
     elif tamper == "extra":
         (output / "profiles.yml").write_text("unreviewed profile", encoding="utf-8")
     elif tamper == "receipt":

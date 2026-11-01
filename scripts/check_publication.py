@@ -43,6 +43,7 @@ ANALYTICS_FILES = {
     "analytics/athena/models/sources.yml",
     "analytics/athena/models/schema.yml",
     "analytics/athena/models/stg_building_proximity.sql",
+    "analytics/athena/macros/require_view.sql",
     "analytics/athena/tests/gold_invariants.sql",
 }
 PUBLIC_PREFIXES = ("src/", "tests/", "scripts/", "configs/", ".github/workflows/")

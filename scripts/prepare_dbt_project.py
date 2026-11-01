@@ -16,6 +16,7 @@ SCAFFOLD_FILES = (
     "models/sources.yml",
     "models/schema.yml",
     "models/stg_building_proximity.sql",
+    "macros/require_view.sql",
     "tests/gold_invariants.sql",
 )
 
