@@ -1,10 +1,12 @@
 """Gold comparison against a pinned summary, including bad rows and weighted-count semantics."""
 
+import copy
 import json
+from unittest.mock import Mock
 
 import pytest
 from athena_results_fixtures import RESULTS as results
-from athena_results_fixtures import csv_bytes, summary_reference
+from athena_results_fixtures import csv_bytes, make_download_case, summary_reference
 
 
 @pytest.fixture
@@ -129,3 +131,170 @@ def test_narrow_float_tolerance_never_changes_integer_count_comparison(reference
     row[-1] = str(expected["share_within"] + 2e-12)
     with pytest.raises(ValueError):
         results.compare_gold_csv(csv_bytes(expected, row=row), expected)
+
+
+@pytest.fixture
+def download(tmp_path, monkeypatch):
+    return make_download_case(tmp_path, monkeypatch)
+
+
+def verify(case):
+    return results.verify_query_result(
+        case.athena, case.s3, case.attempt, case.receipt, summary_path=case.path
+    )
+
+
+def test_result_is_bound_to_saved_query_and_exact_owned_s3_object(download):
+    result = verify(download)
+    assert result["result_verified"] is True and result["row"] == download.expected
+    assert result["caller_identity_verified"] is result["source_readback_verified"] is False
+    assert result["data_scanned_bytes"] == 4096
+    target = {
+        "Bucket": "urban-geo-test-results-123456789012-eu-west-1",
+        "Key": "queries/query-001.csv",
+        "ExpectedBucketOwner": "123456789012",
+    }
+    download.s3.head_object.assert_called_once_with(**target)
+    download.s3.get_object.assert_called_once_with(
+        **target, IfMatch='"offline-etag"', Range=f"bytes=0-{len(download.data) - 1}"
+    )
+    assert download.body.closed and download.body.requests == [len(download.data) + 1]
+    assert download.athena.get_query_execution.call_count == 2
+    download.athena.start_query_execution.assert_not_called()
+    download.athena.stop_query_execution.assert_not_called()
+    download.athena.get_query_results.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("query_id", "another-query"),
+        ("intent_sha256", "0" * 64),
+        ("query_sha256", "0" * 64),
+        ("terminal_confirmed", 1),
+        ("outcome", "query_failed"),
+    ],
+)
+def test_foreign_or_unsuccessful_execution_fails_before_aws(download, field, value):
+    download.receipt[field] = value
+    with pytest.raises(ValueError, match="attempt"):
+        verify(download)
+    download.athena.get_query_execution.assert_not_called()
+    download.s3.head_object.assert_not_called()
+
+
+def test_changed_saved_query_identity_is_rejected(download):
+    (download.attempt.output / "query.json").write_text('{"query_id":"another-query"}')
+    with pytest.raises(ValueError, match="attempt"):
+        verify(download)
+    download.s3.head_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change", ["running", "scan_limit", "wrong_query", "reused", "missing_stats"]
+)
+def test_current_query_state_and_scan_contract_gate_all_s3_reads(download, change):
+    response = download.athena.get_query_execution.return_value["QueryExecution"]
+    if change == "running":
+        response["Status"]["State"] = "RUNNING"
+    elif change == "scan_limit":
+        response["Statistics"]["DataScannedInBytes"] = 100 * 1024**2 + 1
+    elif change == "wrong_query":
+        response["Query"] = "SELECT 1"
+    elif change == "reused":
+        response["Statistics"]["ResultReuseInformation"]["ReusedPreviousResult"] = True
+    else:
+        del response["Statistics"]
+    with pytest.raises(ValueError):
+        verify(download)
+    download.s3.head_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("ContentLength", results.MAX_RESULT_BYTES + 1),
+        ("ContentLength", 0),
+        ("ContentLength", True),
+        ("ETag", None),
+        ("ETag", '"bad\r\netag"'),
+        ("ServerSideEncryption", "aws:kms"),
+        ("ContentEncoding", "gzip"),
+        ("ResponseMetadata", {"HTTPStatusCode": 206}),
+    ],
+)
+def test_head_rejects_bad_objects_before_downloading_body(download, field, value):
+    download.s3.head_object.return_value[field] = value
+    with pytest.raises(ValueError, match="HEAD"):
+        verify(download)
+    download.s3.get_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("ContentLength", 1),
+        ("ETag", '"other-etag"'),
+        ("ContentRange", "bytes 0-1/100000"),
+        ("ServerSideEncryption", "aws:kms"),
+        ("ContentEncoding", "gzip"),
+        ("VersionId", "different-version"),
+        ("ResponseMetadata", {"HTTPStatusCode": 200}),
+    ],
+)
+def test_bad_get_headers_close_body_without_reading_it(download, field, value):
+    download.s3.get_object.return_value[field] = value
+    with pytest.raises(ValueError, match="range"):
+        verify(download)
+    assert download.body.closed and download.body.requests == []
+
+
+@pytest.mark.parametrize("error", [TimeoutError(), KeyboardInterrupt()])
+def test_interrupted_body_read_still_closes_stream(download, error, monkeypatch):
+    monkeypatch.setattr(download.body, "read", Mock(side_effect=error))
+    with pytest.raises(type(error)):
+        verify(download)
+    assert download.body.closed
+
+
+def test_actual_byte_count_must_match_head_even_with_good_headers(download, monkeypatch):
+    monkeypatch.setattr(download.body, "read", Mock(return_value=download.data[:-1]))
+    with pytest.raises(ValueError, match="body length"):
+        verify(download)
+    assert download.body.closed
+
+
+def test_conditional_get_failure_is_never_retried(download):
+    download.s3.get_object.side_effect = RuntimeError("IfMatch failed")
+    with pytest.raises(RuntimeError, match="IfMatch"):
+        verify(download)
+    assert download.s3.get_object.call_count == 1
+
+
+def test_final_query_observation_cannot_change_after_result_read(download):
+    before = download.athena.get_query_execution.return_value
+    after = copy.deepcopy(before)
+    after["QueryExecution"]["Statistics"]["DataScannedInBytes"] = 4097
+    download.athena.get_query_execution.side_effect = [before, after]
+    with pytest.raises(ValueError, match="changed"):
+        verify(download)
+    assert download.body.closed
+
+
+@pytest.mark.parametrize("changed", ["intent", "query", "summary"])
+def test_local_identity_or_expectation_changes_during_download_are_rejected(download, changed):
+    response = download.s3.get_object.return_value
+
+    def fetched(**kwargs):
+        if changed == "intent":
+            (download.attempt.output / "intent.json").write_text("{}")
+        elif changed == "query":
+            (download.attempt.output / "query.json").write_text('{"query_id":"different"}')
+        else:
+            download.path.write_bytes(download.path.read_bytes() + b" ")
+        return response
+
+    download.s3.get_object.side_effect = fetched
+    with pytest.raises(ValueError):
+        verify(download)
+    assert download.body.closed

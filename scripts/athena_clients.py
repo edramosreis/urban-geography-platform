@@ -1,4 +1,4 @@
-"""Own three query-control clients using one frozen credential snapshot; store no secrets."""
+"""Own query-control clients using one frozen credential snapshot; store no secrets."""
 
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -10,8 +10,12 @@ from athena_read_plan import create_athena_client, tooling_sdk_pins
 
 
 @contextmanager
-def query_clients(*, session: Any = None) -> Iterator[dict[str, Any]]:
+def query_clients(
+    *, session: Any = None, include_results: bool = False
+) -> Iterator[dict[str, Any]]:
     """Share credentials across identity/catalog/query calls and close even on partial startup."""
+    if type(include_results) is not bool:
+        raise ValueError("include_results must be an explicit boolean")
     for name, pin in tooling_sdk_pins().items():
         if version(name) != pin:
             raise ValueError("Use the isolated analytics/athena tooling environment")
@@ -43,4 +47,19 @@ def query_clients(*, session: Any = None) -> Iterator[dict[str, Any]]:
             )
             owned.callback(client.close)
             clients[service] = client
+        if include_results:
+            config_class = import_module("botocore.config").Config
+            config = athena.meta.config.merge(
+                config_class(signature_version="s3v4", s3={"addressing_style": "virtual"})
+            )
+            s3 = fixed.client(
+                "s3",
+                region_name="eu-west-1",
+                use_ssl=True,
+                verify=True,
+                endpoint_url="https://s3.eu-west-1.amazonaws.com",
+                config=config,
+            )
+            owned.callback(s3.close)
+            clients["s3"] = s3
         yield clients

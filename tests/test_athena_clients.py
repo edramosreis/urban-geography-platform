@@ -93,3 +93,60 @@ def test_missing_credentials_prevent_client_creation(case):
             pytest.fail("No clients expected")
     session_class.assert_not_called()
     clients.create_athena_client.assert_not_called()
+
+
+def test_optional_result_client_shares_credentials_and_uses_s3_policy(case, monkeypatch):
+    selected, fixed, session_class, athena, sts, glue = case
+    s3 = Mock()
+    fixed.client.side_effect = [sts, glue, s3]
+    importer = clients.import_module
+    config_class = Mock(return_value="s3-overrides")
+    monkeypatch.setattr(
+        clients,
+        "import_module",
+        lambda name: SimpleNamespace(Config=config_class)
+        if name == "botocore.config"
+        else importer(name),
+    )
+    with clients.query_clients(session=selected, include_results=True) as opened:
+        assert opened["s3"] is s3
+        config_class.assert_called_once_with(
+            signature_version="s3v4", s3={"addressing_style": "virtual"}
+        )
+        athena.meta.config.merge.assert_called_once_with("s3-overrides")
+        fixed.client.assert_called_with(
+            "s3",
+            region_name="eu-west-1",
+            use_ssl=True,
+            verify=True,
+            endpoint_url="https://s3.eu-west-1.amazonaws.com",
+            config=athena.meta.config.merge.return_value,
+        )
+    for client in (athena, sts, glue, s3):
+        client.close.assert_called_once()
+
+
+def test_optional_result_client_creation_failure_closes_existing_clients(case, monkeypatch):
+    selected, fixed, session_class, athena, sts, glue = case
+    fixed.client.side_effect = [sts, glue, RuntimeError("S3 creation failed")]
+    importer = clients.import_module
+    monkeypatch.setattr(
+        clients,
+        "import_module",
+        lambda name: SimpleNamespace(Config=Mock())
+        if name == "botocore.config"
+        else importer(name),
+    )
+    with pytest.raises(RuntimeError, match="S3 creation"):
+        with clients.query_clients(session=selected, include_results=True):
+            pytest.fail("No complete client set")
+    for client in (athena, sts, glue):
+        client.close.assert_called_once()
+
+
+def test_result_client_opt_in_requires_a_boolean_before_credential_discovery(case):
+    selected = case[0]
+    with pytest.raises(ValueError, match="boolean"):
+        with clients.query_clients(session=selected, include_results=1):
+            pytest.fail("No clients")
+    selected.get_credentials.assert_not_called()
