@@ -14,7 +14,7 @@ from athena_read_plan import ARTIFACTS, ROOT
 from athena_reader import cleanup_group
 from dbt_metadata import DbtBroker
 from dbt_model_worker import bounded_json, tooling_ready
-from dbt_rpc import receive, send
+from dbt_rpc import MAX_FRAME_BYTES, receive, send
 from dbt_view_control import ViewController
 
 WORKER_SCRIPT = ROOT / "scripts/dbt_model_worker.py"
@@ -111,24 +111,34 @@ class ModelExecutor:
                         except EOFError:
                             process.wait(timeout=5)
                             break
+                        prefix = output / f"ipc-{broker.calls + 1:02}"
+                        write_once(
+                            prefix.with_name(prefix.name + "-request.json"), canonical(message)
+                        )
                         try:
                             value = broker.dispatch(message)
                         except BaseException as error:
                             fault = type(error).__name__
                             try:
-                                send(
-                                    parent,
-                                    {"sequence": message.get("sequence"), "ok": False, "value": {}},
-                                    time.monotonic() + 1,
+                                rejected: dict[str, Any] = {
+                                    "sequence": message.get("sequence"),
+                                    "ok": False,
+                                    "value": {},
+                                }
+                                write_once(
+                                    prefix.with_name(prefix.name + "-response.json"),
+                                    canonical(rejected),
                                 )
+                                send(parent, rejected, time.monotonic() + 1)
                             except Exception:
                                 pass
                             raise
-                        send(
-                            parent,
-                            {"sequence": message["sequence"], "ok": True, "value": value},
-                            deadline,
-                        )
+                        response = {"sequence": message["sequence"], "ok": True, "value": value}
+                        response_bytes = canonical(response)
+                        if len(response_bytes) > MAX_FRAME_BYTES:
+                            raise ValueError("dbt IPC result exceeds its byte ceiling")
+                        write_once(prefix.with_name(prefix.name + "-response.json"), response_bytes)
+                        send(parent, response, deadline)
                 except BaseException as error:
                     fault = fault or type(error).__name__
                     raise

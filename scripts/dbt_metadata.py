@@ -47,7 +47,24 @@ class DbtBroker:
             ):
                 raise ValueError("Unsupported dbt service operation")
             if service == "athena":
-                return getattr(self.control, operation)(**params)
+                value = getattr(self.control, operation)(**params)
+                if operation == "get_query_execution":
+                    query = value["QueryExecution"]
+                    # The parent already validated the full response. SDK timestamps
+                    # are datetime objects; send only fields consumed by the cursor.
+                    return {
+                        "QueryExecution": {
+                            "QueryExecutionId": query["QueryExecutionId"],
+                            "StatementType": query["StatementType"],
+                            "Status": {"State": query["Status"]["State"]},
+                            "Statistics": {
+                                "DataScannedInBytes": query["Statistics"]["DataScannedInBytes"]
+                            },
+                        }
+                    }
+                if operation == "get_query_results":
+                    return {key: value[key] for key in ("ResultSet", "UpdateCount") if key in value}
+                return value
             self.metadata_calls += 1
             if self.metadata_calls > 32:
                 raise ValueError("dbt metadata request ceiling reached")
@@ -84,12 +101,20 @@ class DbtBroker:
                 or "building_proximity" not in names
             ):
                 raise ValueError("Unexpected relation discovery result/page")
-            return {
-                "TableList": [
-                    {key: row[key] for key in ("Name", "TableType", "Parameters") if key in row}
-                    for row in rows
-                ]
-            }
+            projected: list[dict[str, Any]] = []
+            for row in rows:
+                if row.get("TableType") not in {"EXTERNAL_TABLE", "VIRTUAL_VIEW"}:
+                    raise ValueError("Unexpected Glue relation type")
+                projected.append(
+                    {
+                        "Name": row["Name"],
+                        "TableType": row["TableType"],
+                        "Parameters": {
+                            "table_type": row.get("Parameters", {}).get("table_type", "")
+                        },
+                    }
+                )
+            return {"TableList": projected}
         view = params.get("TableName")
         if view not in VIEWS:
             raise ValueError("Metadata mutation/read is not for a Gold view")
@@ -121,7 +146,11 @@ class DbtBroker:
                         "Table": {
                             "Name": view,
                             "VersionId": identity,
-                            "StorageDescriptor": table.get("StorageDescriptor", {}),
+                            "StorageDescriptor": {
+                                k: table["StorageDescriptor"][k]
+                                for k in ("Location",)
+                                if k in table.get("StorageDescriptor", {})
+                            },
                         },
                     }
                 )

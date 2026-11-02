@@ -50,15 +50,19 @@ def test_only_observed_versions_older_than_the_four_kept_versions_can_be_removed
                 "Table": {
                     "Name": view,
                     "VersionId": str(i),
-                    "StorageDescriptor": {"Location": "s3://placeholder/view"},
+                    "StorageDescriptor": {
+                        "Location": "s3://placeholder/view",
+                        "Unused": "not-forwarded",
+                    },
                 },
             }
             for i in range(1, 6)
         ]
     }
-    broker.dispatch(
+    versions = broker.dispatch(
         message(broker, "glue", "get_table_versions", DatabaseName=broker.database, TableName=view)
     )
+    assert "Unused" not in json.dumps(versions)
     broker.dispatch(
         message(
             broker,
@@ -158,3 +162,24 @@ def test_repeating_metadata_has_a_request_count_ceiling(case):
     with pytest.raises(ValueError, match="ceiling"):
         broker.dispatch(message(broker, "sts", "get_caller_identity"))
     assert clients["sts"].get_caller_identity.call_count == 32
+
+
+def test_cached_terminal_metadata_removes_sdk_datetime_objects_for_ipc(case):
+    from dbt_control_fixtures import metadata, params
+
+    fixture, _, broker = case
+
+    def observed(**kwargs):
+        identity = kwargs["QueryExecutionId"]
+        response = metadata(fixture.requests[identity], identity)
+        response["QueryExecution"]["Status"]["CompletionDateTime"] = datetime.now()
+        return response
+
+    fixture.client.get_query_execution.side_effect = observed
+    with fixture.control.session():
+        fixture.control.start_query_execution(**params(fixture.control))
+        response = broker.dispatch(
+            message(broker, "athena", "get_query_execution", QueryExecutionId="view-1")
+        )
+    assert response["QueryExecution"]["Status"] == {"State": "SUCCEEDED"}
+    json.dumps(response, allow_nan=False)
