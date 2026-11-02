@@ -223,9 +223,15 @@ def monitor_query(
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
     stop_reason: str | None = None,
+    observer: Callable[[QueryClient, dict[str, Any], str], dict[str, Any]] | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Monitor a service-returned ID using the request captured before submission."""
     plan, request = intent["plan"], intent["request"]
+    observe = observation if observer is None else observer
+    watch_deadline = started + WATCH_SECONDS
+    if deadline is not None:
+        watch_deadline = min(watch_deadline, deadline)
     stop_attempted, stop_acknowledged = False, False
     stop_deadline: float | None = None
     stop_observations = 0
@@ -294,7 +300,7 @@ def monitor_query(
         while stop_observations < MAX_STOP_OBSERVATIONS and now() < stop_deadline:
             stop_observations += 1
             try:
-                last = observation(client, request, query_id)
+                last = observe(client, request, query_id)
                 safe_record({"event": "stop_observation", "query_id": query_id, **last})
                 if last["state"] in TERMINAL:
                     return finish(reason)
@@ -309,7 +315,7 @@ def monitor_query(
         if stop_reason is not None:
             stop_deadline = now() + STOP_SECONDS
             try:
-                last = observation(client, request, query_id)
+                last = observe(client, request, query_id)
                 attempt.record({"event": "recovery_observation", "query_id": query_id, **last})
             except Exception as exc:
                 attempt.record(
@@ -317,22 +323,22 @@ def monitor_query(
                 )
             return stop_and_confirm(stop_reason)
         for _ in range(MAX_OBSERVATIONS):
-            if now() - started >= WATCH_SECONDS:
+            if now() >= watch_deadline:
                 return stop_and_confirm("watchdog_limit")
             try:
-                last = observation(client, request, query_id)
+                last = observe(client, request, query_id)
             except Exception as exc:
                 attempt.record({"event": "observation_error", "error_type": type(exc).__name__})
                 return stop_and_confirm("observation_failed")
             attempt.record({"event": "observation", "query_id": query_id, **last})
             reason = problem(last)
-            if now() - started >= WATCH_SECONDS:
+            if now() >= watch_deadline:
                 reason = reason or "watchdog_limit"
             if last["state"] in TERMINAL:
                 return finish(reason)
             if reason is not None:
                 return stop_and_confirm(reason)
-            pause(min(POLL_SECONDS, max(0, WATCH_SECONDS - (now() - started))))
+            pause(min(POLL_SECONDS, max(0, watch_deadline - now())))
         return stop_and_confirm("watchdog_limit")
     except BaseException as exc:
         result = stop_and_confirm("controller_interrupted")

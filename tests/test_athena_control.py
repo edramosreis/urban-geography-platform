@@ -523,3 +523,46 @@ def test_recovery_monitor_cancels_active_query_and_confirms_termination(client, 
     assert report["terminal_confirmed"] and report["stop_attempted"]
     client.stop_query_execution.assert_called_once_with(QueryExecutionId="query-001")
     client.start_query_execution.assert_not_called()
+
+
+def test_shared_monitor_honors_an_earlier_deadline_with_the_same_cleanup_budget(client, attempt):
+    clock = Clock()
+    client.get_query_execution.side_effect = [
+        execution(attempt, "RUNNING"),
+        execution(attempt, "RUNNING"),
+        execution(attempt, "CANCELLED"),
+    ]
+    observer = Mock(side_effect=control.observation)
+    report = control.monitor_query(
+        client,
+        attempt,
+        "query-001",
+        intent=attempt.intent(),
+        started=0,
+        now=clock.now,
+        pause=clock.pause,
+        deadline=7,
+        observer=observer,
+    )
+    assert clock.value == 7
+    assert report["outcome"] == "watchdog_limit" and report["terminal_confirmed"]
+    assert observer.call_count == 3
+    client.stop_query_execution.assert_called_once_with(QueryExecutionId="query-001")
+
+
+def test_external_deadline_cannot_extend_the_normal_watchdog(client, attempt):
+    clock = Clock()
+    client.get_query_execution.side_effect = lambda **kwargs: execution(attempt, "RUNNING")
+    report = control.monitor_query(
+        client,
+        attempt,
+        "query-001",
+        intent=attempt.intent(),
+        started=0,
+        now=clock.now,
+        pause=clock.pause,
+        deadline=9999,
+    )
+    assert clock.value == control.WATCH_SECONDS + control.STOP_SECONDS
+    assert report["outcome"] == "stop_unconfirmed"
+    client.stop_query_execution.assert_called_once()
