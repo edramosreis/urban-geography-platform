@@ -39,6 +39,7 @@ def test_two_view_plan_pins_source_recipe_and_caps_without_optional_tooling(proj
     )
     assert plan["limits"] == {
         "max_queries": 2,
+        "max_query_bytes": 16384,
         "wall_seconds": 600,
         "max_total_scan_bytes": 104857600,
     }

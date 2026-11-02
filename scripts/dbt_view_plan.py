@@ -80,7 +80,12 @@ def view_build_plan(
         "source_plan": plan,
         "project_receipt_sha256": sha256((project / "preparation.json").read_bytes()),
         "queries": queries,
-        "limits": {"max_queries": 2, "wall_seconds": 600, "max_total_scan_bytes": MAX_SCAN_BYTES},
+        "limits": {
+            "max_queries": 2,
+            "max_query_bytes": 16384,
+            "wall_seconds": 600,
+            "max_total_scan_bytes": MAX_SCAN_BYTES,
+        },
         "source_readback_verified": False,
         "execution_authorized": False,
     }
