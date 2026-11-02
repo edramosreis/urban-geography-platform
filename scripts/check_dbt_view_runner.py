@@ -1,6 +1,7 @@
 """Check the joined view runner with real dbt/SDK clients and a simulated source reader."""
 
 import argparse
+import base64
 import copy
 import hashlib
 import json
@@ -20,7 +21,7 @@ from check_athena_preflight import CALLER, fake_readback, fake_table
 from check_dbt_project import check_manifest
 from check_dbt_views import ViewScenario
 from dbt_test_plan import test_plan
-from dbt_view_plan import check_compiled_models, normalized_sql
+from dbt_view_plan import check_compiled_models, compiled_models, normalized_sql
 from dbt_view_runner import run_owned_views
 from prepare_dbt_project import ARTIFACTS, prepare_project, verify_project
 
@@ -34,8 +35,45 @@ SCENARIOS = (
     "watchdog",
     "test_quality",
     "test_watchdog",
+    "view_sql",
+    "view_drift",
 )
 EXPECTED_CALLER = CALLER | {"Arn": CALLER["Arn"].replace("-reader/", "-dbt/")}
+
+
+def fake_catalog_view(source: dict[str, Any], name: str) -> dict[str, Any]:
+    text = ["source_release", "area_id", "source_run_sha256"]
+    if name == "grid_proximity":
+        text.append("grid_id")
+    columns = [(n, "varchar") for n in text] + [
+        ("mapped_buildings", "bigint"),
+        ("buildings_within", "bigint"),
+        ("share_within", "double"),
+    ]
+    definition = {
+        "originalSql": compiled_models(source["binding"])[name],
+        "catalog": "awsdatacatalog",
+        "schema": source["binding"]["source_schema"],
+        "columns": [{"name": n, "type": t} for n, t in columns],
+        "owner": "offline",
+        "runAsInvoker": True,
+    }
+    return {
+        "CatalogId": source["target"]["account_id"],
+        "DatabaseName": source["binding"]["source_schema"],
+        "Name": name,
+        "TableType": "VIRTUAL_VIEW",
+        "VersionId": "1",
+        "Parameters": {"presto_view": "true"},
+        "StorageDescriptor": {
+            "Columns": [{"Name": n, "Type": "string" if t == "varchar" else t} for n, t in columns]
+        },
+        "ViewOriginalText": "/* Presto View: "
+        + base64.b64encode(canonical(definition)).decode()
+        + " */",
+        "ViewExpandedText": "/* Presto View */",
+        "UpdateTime": datetime.now(UTC),
+    }
 
 
 def check(
@@ -46,11 +84,17 @@ def check(
     *,
     process_executor: bool = False,
     data_tests: bool = False,
+    view_readback: bool = False,
 ) -> dict[str, Any]:
     if data_tests and (
-        not process_executor or scenario not in {"success", "test_quality", "test_watchdog"}
+        not process_executor
+        or scenario not in {"success", "test_quality", "test_watchdog", "view_sql", "view_drift"}
     ):
         raise ValueError("Test-phase scenarios require the supervised executor")
+    if scenario.startswith("view_") and (not process_executor or not view_readback):
+        raise ValueError(
+            "View-readback scenarios require the supervised executor and readback flag"
+        )
     if scenario.startswith("test_") and not data_tests:
         raise ValueError("Select the data-test phase for test scenarios")
     gold = expected_gold(summary, pin)
@@ -101,6 +145,7 @@ def check(
     trace: list[dict[str, Any]] = []
     requests: dict[str, dict[str, Any]] = {}
     stopped: set[str] = set()
+    view_reads = {"grid_proximity": 0, "release_proximity": 0}
     clients: dict[str, Any] = {}
     closers: list[Any] = []
     violations: list[str] = []
@@ -239,6 +284,42 @@ def check(
                     ):
                         table["Table"]["VersionId"] = "2"
                     return table
+                if (
+                    view_readback
+                    and service == "glue"
+                    and operation == "GetTable"
+                    and params.get("Name") in view_reads
+                ):
+                    name = params["Name"]
+                    if (
+                        params
+                        != {
+                            "CatalogId": "123456789012",
+                            "DatabaseName": source["binding"]["source_schema"],
+                            "Name": name,
+                        }
+                        or len(requests) < 2
+                    ):
+                        raise ValueError("Unexpected view-readback target or ordering")
+                    view_reads[name] += 1
+                    table = fake_catalog_view(source, name)
+                    if scenario == "view_sql":
+                        definition = json.loads(
+                            base64.b64decode(
+                                table["ViewOriginalText"][len("/* Presto View: ") : -len(" */")]
+                            )
+                        )
+                        definition["originalSql"] = definition["originalSql"].replace(
+                            "OF 123", "OF 456"
+                        )
+                        table["ViewOriginalText"] = (
+                            "/* Presto View: "
+                            + base64.b64encode(canonical(definition)).decode()
+                            + " */"
+                        )
+                    if scenario == "view_drift" and view_reads[name] == 2:
+                        table["VersionId"] = "2"
+                    return {"Table": table}
                 if service != "athena":
                     if process_executor and service == "glue":
                         base = {
@@ -448,6 +529,7 @@ def check(
                     caller_user_id=EXPECTED_CALLER["UserId"],
                     execute_models=None if process_executor else execute,
                     data_tests=data_tests,
+                    view_readback=view_readback,
                     session=session,
                     reader_factory=reader_factory,
                     now=clock.now,
@@ -501,6 +583,8 @@ def check(
         "catalog_final": 2,
         "test_quality": 9,
         "test_watchdog": 3,
+        "view_sql": 2,
+        "view_drift": 9 if data_tests else 2,
     }[scenario]
     if data_tests and scenario == "success":
         expected_queries = 9
@@ -511,7 +595,9 @@ def check(
     if (error_type is not None) != (scenario not in {"success", "replace"}):
         raise ValueError("Unexpected runner exception")
     if dbt_calls != (
-        2 if data_tests else (0 if scenario in {"wrong_caller", "wrong_readback"} else 1)
+        2
+        if data_tests and scenario != "view_sql"
+        else (0 if scenario in {"wrong_caller", "wrong_readback"} else 1)
     ):
         raise ValueError("dbt started before the source gate")
     if report is not None:
@@ -519,6 +605,7 @@ def check(
             report["caller_identity_verified"]
             and report["source_readback_verified"]
             and not report["result_verified"]
+            and report["view_catalog_verified"] is view_readback
         )
     elif (output / "run/receipt.json").exists():
         raise ValueError("Failed runner wrote an acceptance receipt")
@@ -554,7 +641,7 @@ def check(
         if not failure["query_control"]["queries"][0]["terminal_confirmed"]:
             raise ValueError("Cancellation was not confirmed before stopping the worker")
     test_control = (report or failure or {}).get("test_control")
-    if data_tests:
+    if data_tests and scenario != "view_sql":
         if test_control is None:
             raise ValueError("Missing test phase evidence")
         if scenario == "success" and (
@@ -571,6 +658,27 @@ def check(
             len(stopped) != 1 or test_control["queries"][0]["outcome"] != "watchdog_limit"
         ):
             raise ValueError("Data-test watchdog did not retain owned cancellation")
+    if view_readback and scenario in {"success", "view_sql", "view_drift"}:
+        expected_reads = 1 if scenario == "view_sql" else 4
+        if sum(view_reads.values()) != expected_reads:
+            raise ValueError("Unexpected number of view-readback observations")
+        if scenario.startswith("view_") and (
+            failure is None
+            or failure["view_catalog_verified"]
+            or failure["stage"]
+            != (
+                "view_catalog_readback" if scenario == "view_sql" else "final_view_catalog_readback"
+            )
+        ):
+            raise ValueError("View readback failed at the wrong gate")
+        if scenario == "view_sql" and (test_process is not None or test_control is not None):
+            raise ValueError("Data tests started before the initial view-readback gate")
+        if (
+            scenario == "view_drift"
+            and data_tests
+            and (test_control is None or test_control["status"] != "data_tests_passed")
+        ):
+            raise ValueError("Final view drift was not isolated from data-test success")
     root_pin = hashlib.sha256((output / "run/intent.json").read_bytes()).hexdigest()
     outcome = report if report is not None else failure
     if outcome is None or outcome["run_intent_sha256"] != root_pin:
@@ -582,6 +690,11 @@ def check(
         ):
             if hashlib.sha256((output / "run" / name).read_bytes()).hexdigest() != report[key]:
                 raise ValueError("Source/final proof is not bound to the receipt")
+    if report is not None and view_readback:
+        for phase in ("initial", "final"):
+            content = (output / f"run/view-catalog-{phase}.json").read_bytes()
+            if hashlib.sha256(content).hexdigest() != report[f"view_catalog_{phase}_sha256"]:
+                raise ValueError("Receipt is not bound to view-readback evidence")
     verify_project(project)
     final = {
         "scenario": scenario,
@@ -597,6 +710,9 @@ def check(
         "dbt_success": dbt_success,
         "dbt_model_statuses": dbt_statuses,
         "source_reader_calls": reader_calls,
+        "view_readback_enabled": view_readback,
+        "view_catalog_reads": sum(view_reads.values()),
+        "live_view_catalog_verified": False,
         "source_readback_simulated": True,
         "owned_sdk_clients_closed": len(closers),
         "credential_environment_cleared": True,
@@ -622,6 +738,7 @@ def main() -> None:
     parser.add_argument("--scenario", choices=SCENARIOS, required=True)
     parser.add_argument("--process-executor", action="store_true")
     parser.add_argument("--data-tests", action="store_true")
+    parser.add_argument("--view-readback", action="store_true")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -632,6 +749,7 @@ def main() -> None:
                 args.scenario,
                 process_executor=args.process_executor,
                 data_tests=args.data_tests,
+                view_readback=args.view_readback,
             ),
             indent=2,
         )

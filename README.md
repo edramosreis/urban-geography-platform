@@ -883,8 +883,9 @@ and malformed results are refused. A legitimate nonzero count allows remaining
 tests to finish for diagnostics but prevents the final receipt. Query/protocol
 failures block further submissions. The runner requires all seven observed zero
 counts and matching dbt pass outcomes before its final source check/receipt.
-These checks do not establish view catalog identity or independently verified
-Gold results; those acceptance flags remain false.
+By themselves these checks do not establish view catalog identity or independent
+Gold correctness. Optional catalog readback is described below; the independent
+Gold-result acceptance flag remains false.
 
 The explicit test phase has its own limits: seven queries of at most 16 KiB,
 300 seconds per query shortened by a 600-second session deadline, and the
@@ -903,3 +904,44 @@ a known Gold-quality failure and owned test-query cancellation respectively.
 There are no real AWS requests, live data-quality acceptance or Spark startup
 in these checks. Live IAM/service behavior, view/Gold readback, costs and approved
 teardown remain separate work.
+
+
+### dbt view catalog readback
+
+run_owned_views(..., view_readback=True) reads the two named Glue view records
+after model completion and again after the optional data-test phase. It checks
+same-account/database identity, ordinary Athena VIRTUAL_VIEW metadata, ordered
+columns/types and the encoded SQL against the pinned prepared model, including
+the source snapshot and run hash. Changed versions, definitions or parameters
+between the two observations prevent the final receipt. Source/caller gates
+and existing query/worker limits remain in place. The option defaults to false.
+
+scripts/dbt_view_catalog.py supports a bounded ordinary Athena Presto-view
+encoding. Its SQL comparison ignores whitespace/comments and normalizes word
+case/ordinary identifier quoting while preserving string literals, operators
+and grouping. It is a conservative token comparison: new encodings, additional
+fields or engine rewrites need review instead of relaxed matching. The encoded
+text is limited to 64 KiB, decoded definition to 24 KiB, SQL to 16 KiB and table
+parameters to 4 KiB. These are validation limits after the bounded SDK call
+returns, not HTTP transport byte limits. Lake Formation/multi-dialect views,
+resource links, federated tables and physical data locations are unsupported.
+
+Both observations are retained with versions, hashes, decoded SQL and columns;
+their file hashes bind them to the source-checked receipt. When opted in, a
+successful receipt sets view_catalog_verified=true. This means the supported
+definitions matched at both observations. Separate catalog calls are not an
+atomic snapshot or a lock: intervening/restored changes or later changes are
+not excluded. It does not establish the writer identity, whole-role security
+or independent Gold-result correctness; result_verified remains false.
+
+This adds at most four exact Glue GetTable calls, with no new Athena query,
+client, IAM permission or data-scan allowance. A failed readback preserves the
+failure stage and prevents acceptance; views already created are not rolled back.
+
+scripts/check_dbt_view_runner.py --process-executor --data-tests --view-readback
+uses actual dbt workers and SDK-validated synthetic AWS/source responses. Success,
+view_sql and view_drift exercise matching views, a wrong source snapshot before
+data tests and a version change after all seven tests pass. These checks execute
+no real AWS request or Spark job. Actual Athena catalog encoding/SQL formatting,
+service permissions and Gold results still need separately approved live
+validation. Independent Gold result comparison is the next acceptance step.
