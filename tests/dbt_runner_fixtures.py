@@ -10,7 +10,7 @@ from athena_runner_fixtures import CALLER as CALLER
 from athena_runner_fixtures import ROOT, trial_case
 from dbt_control_fixtures import PREPARE, VIEWS, metadata, params
 
-for name in ("dbt_test_plan", "dbt_test_control", "dbt_view_catalog"):
+for name in ("dbt_test_plan", "dbt_test_control", "dbt_view_catalog", "dbt_gold_result"):
     spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -44,16 +44,18 @@ def runner_case(tmp_path, monkeypatch):
         number = len(requests) + 1
         assert base.reader.called
         assert (output / f"submission-gate-{number:02}.json").exists()
-        testing = VIEWS.normalized_sql(request["QueryString"]).startswith(
-            "select count(*) as failures"
-        )
-        ordinal = 1 + sum(
-            VIEWS.normalized_sql(r["QueryString"]).startswith("select count(*) as failures")
-            == testing
-            for r in requests.values()
-        )
-        phase = "tests" if testing else "queries"
-        saved = json.loads((output / f"{phase}/query-{ordinal:02}/intent.json").read_text())
+
+        def phase(sql):
+            if VIEWS.normalized_sql(sql).startswith("select count(*) as failures"):
+                return "tests"
+            if VIEWS.normalized_sql(sql).startswith("SELECT source_release,"):
+                return "gold"
+            return "queries"
+
+        selected = phase(request["QueryString"])
+        ordinal = 1 + sum(phase(r["QueryString"]) == selected for r in requests.values())
+        phase_name = selected
+        saved = json.loads((output / f"{phase_name}/query-{ordinal:02}/intent.json").read_text())
         assert saved["request"] == request
         identity = "view-" + str(number)
         requests[identity] = request

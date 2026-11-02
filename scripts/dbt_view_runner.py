@@ -14,6 +14,7 @@ from athena_read_plan import same
 from athena_reader import WORKER_PYTHON, ReaderProcess
 from athena_reader_worker import verified_jars
 from athena_runner import MAX_PLAN_BYTES, check_inputs, pinned_record
+from dbt_gold_result import GoldController, gold_result_plan
 from dbt_test_control import TestController
 from dbt_test_plan import TEST_NAMES, test_plan
 from dbt_view_catalog import observe_views
@@ -77,6 +78,7 @@ def run_view_build(
     execute_models: ModelExecutor,
     execute_tests: ModelExecutor | None = None,
     view_readback: bool = False,
+    gold_results: bool = False,
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -95,6 +97,10 @@ def run_view_build(
         raise ValueError("Explicit snapshot reader and model executor are required")
     if type(view_readback) is not bool:
         raise ValueError("view_readback must be an explicit boolean")
+    if type(gold_results) is not bool or (
+        gold_results and not (view_readback and callable(execute_tests))
+    ):
+        raise ValueError("Gold result verification requires data tests and view readback")
     output = output.resolve()
     source_plan = plan["source_plan"]
     expected = expected_caller(source_plan["target"]["account_id"], caller_arn, caller_user_id)
@@ -102,6 +108,7 @@ def run_view_build(
         "contract_version": 1,
         "view_plan": plan,
         "view_readback": view_readback,
+        "gold_result_plan": gold_result_plan(project, **target) if gold_results else None,
         "data_test_plan": test_plan(project, **target) if execute_tests is not None else None,
         "input_path": str(input_path.resolve()),
         "writer_receipt": str(writer_receipt.resolve()),
@@ -115,6 +122,9 @@ def run_view_build(
     control: ViewController | None = None
     tests: TestController | None = None
     initial_view_pin = final_view_pin = None
+    gold: GoldController | None = None
+    gold_pin = None
+    gold_proof: dict[str, Any] | None = None
     try:
         source = verify_query_source(
             clients["sts"],
@@ -215,6 +225,39 @@ def run_view_build(
                 or tests.report()["status"] != "data_tests_passed"
             ):
                 raise ValueError("dbt data tests did not all pass")
+        if gold_results:
+            stage = "gold_result"
+            gold = GoldController(
+                clients["athena"],
+                project,
+                output / "gold",
+                **source_plan["target"],
+                now=now,
+                pause=pause,
+                before_submit=before_submit,
+            )
+            with gold.session():
+                recipe = gold.plan()
+                source_request = recipe["source_plan"]["request_template"]
+                query_id = gold.start_query_execution(
+                    QueryString=recipe["queries"][0]["sql"],
+                    WorkGroup=source_request["WorkGroup"],
+                    QueryExecutionContext=source_request["QueryExecutionContext"],
+                    ResultConfiguration={
+                        "OutputLocation": source_request["ResultConfiguration"]["OutputLocation"]
+                    },
+                )["QueryExecutionId"]
+                gold_proof = gold.verify_result(query_id, summary_path=input_path / "summary.json")
+            if not gold.report()["result_verified"]:
+                raise ValueError("Gold result was not verified")
+            gold_pin = save_record(
+                output / "gold-result-verification.json",
+                {
+                    "run_intent_sha256": intent_pin,
+                    "initial_view_sha256": initial_view_pin,
+                    "result": gold_proof,
+                },
+            )
         if view_readback:
             stage = "final_view_catalog_readback"
             assert initial_view_pin is not None
@@ -236,6 +279,14 @@ def run_view_build(
             assert initial_view_pin is not None and final_view_pin is not None
             pinned_record(output / "view-catalog-initial.json", initial_view_pin)
             pinned_record(output / "view-catalog-final.json", final_view_pin)
+        if gold_results:
+            assert gold_pin is not None and gold_proof is not None
+            pinned_record(output / "gold-result-verification.json", gold_pin)
+            pinned_record(output / "gold/query-01/results.json", gold_proof["response_sha256"])
+            pinned_record(
+                output / "gold/query-01/gold-result.json",
+                hashlib.sha256(canonical(gold_proof)).hexdigest(),
+            )
         report = {
             "status": "source_checked_view_build",
             "run_intent_sha256": intent_pin,
@@ -253,13 +304,18 @@ def run_view_build(
             "view_catalog_verified": view_readback,
             "view_catalog_initial_sha256": initial_view_pin,
             "view_catalog_final_sha256": final_view_pin,
-            "result_verified": False,
+            "result_verified": gold_results,
+            "gold_result_verification_sha256": gold_pin,
+            "gold_control": gold.report() if gold else None,
+            "result_scope": "Release totals/share versus pinned pilot summary"
+            if gold_results
+            else None,
             "writer_job_identity_verified": False,
             "query_control": control.report(),
             "scope": (
                 "Observed caller/source and controlled model completion; "
                 "view catalog is checked only when opted in; "
-                "Gold result acceptance remains separate"
+                "release-result verification is limited to the pinned pilot summary"
             ),
         }
         save_record(output / "receipt.json", report)
@@ -277,6 +333,8 @@ def run_view_build(
                     "result_verified": False,
                     "query_control": control.report() if control else None,
                     "test_control": tests.report() if tests else None,
+                    "gold_control": gold.report() if gold else None,
+                    "gold_result_verification_sha256": gold_pin,
                     "view_catalog_verified": False,
                     "view_catalog_initial_sha256": initial_view_pin,
                     "view_catalog_final_sha256": final_view_pin,
@@ -300,6 +358,7 @@ def run_owned_views(
     execute_models: ModelExecutor | None = None,
     data_tests: bool = False,
     view_readback: bool = False,
+    gold_results: bool = False,
     session: Any = None,
     reader_factory: Callable[..., Any] = ReaderProcess,
     now: Callable[[], float] = time.monotonic,
@@ -318,6 +377,8 @@ def run_owned_views(
     )
     if type(view_readback) is not bool:
         raise ValueError("view_readback must be an explicit boolean")
+    if type(gold_results) is not bool or (gold_results and not (data_tests and view_readback)):
+        raise ValueError("Gold result verification requires data tests and view readback")
     if type(data_tests) is not bool or (data_tests and execute_models is not None):
         raise ValueError("Data tests require the default supervised model executor")
     if (execute_models is not None and not callable(execute_models)) or not callable(
@@ -352,6 +413,7 @@ def run_owned_views(
             execute_models=executor,
             execute_tests=ProcessExecutor(resources.clients) if data_tests else None,
             view_readback=view_readback,
+            gold_results=gold_results,
             now=now,
             pause=pause,
         )
