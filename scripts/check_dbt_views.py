@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import re
 from dataclasses import dataclass, field
 from importlib.metadata import version
 from pathlib import Path
@@ -12,15 +11,10 @@ from unittest.mock import patch
 
 from athena_read_plan import read_plan, tooling_sdk_pins
 from check_dbt_project import check_manifest
-from prepare_dbt_project import ARTIFACTS, project_files, verify_project
+from dbt_view_plan import VIEWS, check_compiled_models, normalized_sql
+from prepare_dbt_project import ARTIFACTS, verify_project
 
-VIEWS = ("grid_proximity", "release_proximity")
 SCENARIOS = ("create", "replace", "table_collision", "full_refresh_collision", "query_failure")
-
-
-def normalized_sql(sql: str) -> str:
-    # Canonical project SQL has no comment delimiters inside literals.
-    return " ".join(re.sub(r"/\*.*?\*/|--[^\n]*", "", sql, flags=re.S).split())
 
 
 @dataclass
@@ -184,48 +178,6 @@ class ViewScenario:
         ]
         if deleted != (list(VIEWS) if self.scenario == "replace" else []):
             raise ValueError("Unexpected view version maintenance")
-
-
-def check_compiled_models(manifest: dict[str, Any], binding: dict[str, Any]) -> None:
-    """Independently render this fixed graph; check snapshot/hash and the complete SQL."""
-    files, _ = project_files(binding)
-    schema = binding["source_schema"]
-    stage = (
-        files["models/stg_building_proximity.sql"]
-        .decode()
-        .replace('{{ var("source_run_sha256") }}', binding["source_run_sha256"])
-        .replace("{{ var('snapshot_id') }}", str(binding["snapshot_id"]))
-        .replace(
-            "{{ source('lakehouse', 'building_proximity') }}",
-            f'"awsdatacatalog"."{schema}"."building_proximity"',
-        )
-    )
-    grid = (
-        files["models/grid_proximity.sql"]
-        .decode()
-        .replace("{{ ref('stg_building_proximity') }}", "__dbt__cte__stg_building_proximity")
-        .replace(
-            "WITH counts AS (",
-            "WITH __dbt__cte__stg_building_proximity as (\n" + stage + "\n), counts AS (",
-            1,
-        )
-    )
-    release = (
-        files["models/release_proximity.sql"]
-        .decode()
-        .replace("{{ ref('grid_proximity') }}", f'"AwsDataCatalog"."{schema}"."grid_proximity"')
-    )
-    for name, expected in {
-        "stg_building_proximity": stage,
-        "grid_proximity": grid,
-        "release_proximity": release,
-    }.items():
-        compiled = manifest["nodes"]["model.urban_geo_athena." + name].get("compiled_code")
-        # A failed parent causes dbt to skip compiling the release model.
-        if compiled is None and name == "release_proximity":
-            continue
-        if not isinstance(compiled, str) or normalized_sql(compiled) != normalized_sql(expected):
-            raise ValueError("dbt compilation differs from pinned model SQL: " + name)
 
 
 def check_views(project: Path, output: Path, scenario: str) -> dict[str, Any]:

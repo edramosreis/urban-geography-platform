@@ -10,7 +10,7 @@ import pytest
 from athena_plan_fixtures import ATHENA, OPTIONS
 
 ROOT = Path(__file__).resolve().parents[1]
-for name in ("check_dbt_project", "check_dbt_views"):
+for name in ("dbt_view_plan", "check_dbt_project", "check_dbt_views"):
     spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
