@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from contextlib import ExitStack
+from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -22,11 +23,21 @@ from dbt_view_plan import check_compiled_models
 from dbt_view_runner import run_owned_views
 from prepare_dbt_project import ARTIFACTS, prepare_project, verify_project
 
-SCENARIOS = ("success", "wrong_caller", "wrong_readback", "catalog_between", "catalog_final")
+SCENARIOS = (
+    "success",
+    "wrong_caller",
+    "wrong_readback",
+    "catalog_between",
+    "catalog_final",
+    "replace",
+    "watchdog",
+)
 EXPECTED_CALLER = CALLER | {"Arn": CALLER["Arn"].replace("-reader/", "-dbt/")}
 
 
-def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any]:
+def check(
+    summary: Path, pin: str, output: Path, scenario: str, *, process_executor: bool = False
+) -> dict[str, Any]:
     gold = expected_gold(summary, pin)
     resolved = output.resolve()
     if (
@@ -73,6 +84,7 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
     readback.update(rows=gold["mapped_buildings"], writer_receipt_sha256=writer_pin)
     trace: list[dict[str, Any]] = []
     requests: dict[str, dict[str, Any]] = {}
+    stopped: set[str] = set()
     clients: dict[str, Any] = {}
     closers: list[Any] = []
     violations: list[str] = []
@@ -84,7 +96,7 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
     dbt_success = False
     dbt_statuses: dict[str, str] = {}
     clock = Clock()
-    fake = ViewScenario(source, "create")
+    fake = ViewScenario(source, "replace" if scenario == "replace" else "create")
     env = {
         "PATH": os.environ.get("PATH", ""),
         "AWS_ACCESS_KEY_ID": "offline-testing",
@@ -212,6 +224,30 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
                         table["Table"]["VersionId"] = "2"
                     return table
                 if service != "athena":
+                    if process_executor and service == "glue":
+                        base = {
+                            "CatalogId": "123456789012",
+                            "DatabaseName": source["binding"]["source_schema"],
+                        }
+                        if operation == "GetDatabases" and params == {
+                            "CatalogId": "123456789012",
+                            "MaxResults": 10,
+                        }:
+                            return fake.reply(service, operation, {})
+                        if operation == "GetTables" and params == base | {"MaxResults": 10}:
+                            return fake.reply(service, operation, base)
+                        if operation == "GetTableVersions" and params == base | {
+                            "TableName": params.get("TableName"),
+                            "MaxResults": 20,
+                        }:
+                            return fake.reply(
+                                service,
+                                operation,
+                                {
+                                    "DatabaseName": base["DatabaseName"],
+                                    "TableName": params["TableName"],
+                                },
+                            )
                     return fake.reply(service, operation, params)
                 if operation == "GetWorkGroup" and params == {
                     "WorkGroup": source["workgroup"]["Name"]
@@ -224,7 +260,7 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
                 if operation == "StartQueryExecution":
                     number = len(requests) + 1
                     saved = json.loads(
-                        (active_control.output / f"query-{number:02}/intent.json").read_text()
+                        (output / f"run/queries/query-{number:02}/intent.json").read_text()
                     )
                     if (
                         params != saved["request"]
@@ -238,6 +274,18 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
                 if not isinstance(query_id, str) or query_id not in requests:
                     raise ValueError("Unexpected query identity")
                 request = requests[query_id]
+                if (
+                    operation == "StopQueryExecution"
+                    and params == {"QueryExecutionId": query_id}
+                    and query_id not in stopped
+                ):
+                    stopped.add(query_id)
+                    return {}
+                state = (
+                    "CANCELLED"
+                    if query_id in stopped
+                    else ("RUNNING" if scenario == "watchdog" else "SUCCEEDED")
+                )
                 if operation == "GetQueryExecution" and params == {"QueryExecutionId": query_id}:
                     return {
                         "QueryExecution": {
@@ -246,7 +294,12 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
                             "WorkGroup": request["WorkGroup"],
                             "QueryExecutionContext": request["QueryExecutionContext"],
                             "StatementType": "DDL",
-                            "Status": {"State": "SUCCEEDED"},
+                            "Status": {"State": state}
+                            | (
+                                {}
+                                if state == "RUNNING"
+                                else {"CompletionDateTime": datetime.now(UTC)}
+                            ),
                             "EngineVersion": {
                                 "SelectedEngineVersion": "Athena engine version 3",
                                 "EffectiveEngineVersion": "Athena engine version 3",
@@ -321,13 +374,13 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
                     writer_receipt_sha256=writer_pin,
                     caller_arn=EXPECTED_CALLER["Arn"],
                     caller_user_id=EXPECTED_CALLER["UserId"],
-                    execute_models=execute,
+                    execute_models=None if process_executor else execute,
                     session=session,
                     reader_factory=reader_factory,
                     now=clock.now,
                     pause=clock.pause,
                 )
-            except ValueError as error:
+            except (ValueError, RuntimeError) as error:
                 error_type = type(error).__name__
             finally:
                 (output / "trace.json").write_bytes(canonical(trace))
@@ -339,16 +392,34 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
                 or any(reader_environments)
             ):
                 raise ValueError("Owned clients or credential environment were not cleaned up")
+    process = None
+    worker_report = None
+    if process_executor:
+        process_path = output / "run/dbt/process.json"
+        dbt_calls = int(process_path.exists())
+        if process_path.exists():
+            process = json.loads(process_path.read_text())
+            if not process["owned_group_stopped"] or process["credentials_sent"]:
+                raise ValueError("dbt process cleanup or credential isolation failed")
+        report_path = output / "run/dbt/worker-report.json"
+        if report_path.exists():
+            worker_report = json.loads(report_path.read_text())
+            dbt_success = worker_report["outcome"]["success"]
+            dbt_statuses = worker_report["outcome"]["model_statuses"]
     expected_queries = {
         "success": 2,
+        "replace": 2,
+        "watchdog": 1,
         "wrong_caller": 0,
         "wrong_readback": 0,
         "catalog_between": 1,
         "catalog_final": 2,
     }[scenario]
-    if len(requests) != expected_queries or (report is not None) != (scenario == "success"):
+    if len(requests) != expected_queries or (report is not None) != (
+        scenario in {"success", "replace"}
+    ):
         raise ValueError("Wrong query count or acceptance outcome")
-    if (error_type is not None) != (scenario != "success"):
+    if (error_type is not None) != (scenario not in {"success", "replace"}):
         raise ValueError("Unexpected runner exception")
     if dbt_calls != (0 if scenario in {"wrong_caller", "wrong_readback"} else 1):
         raise ValueError("dbt started before the source gate")
@@ -371,14 +442,26 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
         raise ValueError("Initial source gate failed at the wrong stage")
     if scenario == "catalog_between" and (
         failure is None
-        or failure["stage"] != "model_outcome"
-        or dbt_statuses != {"grid_proximity": "success", "release_proximity": "error"}
+        or failure["stage"] != ("view_execution" if process_executor else "model_outcome")
+        or (
+            not process_executor
+            and dbt_statuses != {"grid_proximity": "success", "release_proximity": "error"}
+        )
     ):
         raise ValueError("Catalog drift must block exactly the second model")
     if scenario == "catalog_final" and (
         failure is None or failure["stage"] != "final_source_gate" or not dbt_success
     ):
         raise ValueError("Final drift must reject an otherwise successful model run")
+    if scenario == "watchdog":
+        if (
+            failure is None
+            or failure["query_control"]["queries"][0]["outcome"] != "watchdog_limit"
+            or len(stopped) != 1
+        ):
+            raise ValueError("Worker failure lost owned-query cancellation")
+        if not failure["query_control"]["queries"][0]["terminal_confirmed"]:
+            raise ValueError("Cancellation was not confirmed before stopping the worker")
     root_pin = hashlib.sha256((output / "run/intent.json").read_bytes()).hexdigest()
     outcome = report if report is not None else failure
     if outcome is None or outcome["run_intent_sha256"] != root_pin:
@@ -396,6 +479,10 @@ def check(summary: Path, pin: str, output: Path, scenario: str) -> dict[str, Any
         "tooling": pins,
         "simulated_query_submissions": len(requests),
         "actual_dbt_invocations": dbt_calls,
+        "process_executor_used": process_executor,
+        "stop_requests": len(stopped),
+        "worker_process": process,
+        "worker_report": worker_report,
         "dbt_success": dbt_success,
         "dbt_model_statuses": dbt_statuses,
         "source_reader_calls": reader_calls,
@@ -422,10 +509,18 @@ def main() -> None:
     parser.add_argument("--source-run-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scenario", choices=SCENARIOS, required=True)
+    parser.add_argument("--process-executor", action="store_true")
     args = parser.parse_args()
     print(
         json.dumps(
-            check(args.summary, args.source_run_sha256, args.output, args.scenario), indent=2
+            check(
+                args.summary,
+                args.source_run_sha256,
+                args.output,
+                args.scenario,
+                process_executor=args.process_executor,
+            ),
+            indent=2,
         )
     )
 

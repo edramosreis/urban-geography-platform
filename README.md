@@ -817,8 +817,8 @@ Saved intent, source proof and final-gate hashes bind the resulting receipt.
 
 Its owned-resource entry point uses the existing frozen-credential SDK clients
 and isolated Spark reader, checks the default reader runtime before credentials,
-and closes clients/clears the credential environment on every exit. The model
-executor is an explicit dependency. There is no live execution CLI or automatic
+and closes clients/clears the credential environment on every exit. The owned entry point now uses the supervised executor below by default, with an
+explicit executor override available for focused checks. There is no live execution CLI or automatic
 rollback: a rejected run can leave an already created/replaced first view.
 
 scripts/check_dbt_view_runner.py supplies the real locked dbt adapter and SDK
@@ -829,6 +829,39 @@ block the appropriate submission/receipt, and owned clients/credentials close.
 No AWS request, Spark startup or dbt data-test execution occurs in this check.
 
 Source-checked model completion is separate from view catalog readback, Gold
-result verification and dbt data-test acceptance. A production model-executor
-integration and supervision of the whole dbt process/other metadata calls remain
-future work, along with separately approved live validation, costs and teardown.
+result verification and dbt data-test acceptance. The supervised executor below covers the model process and catalog-call limits.
+Bounded data-test execution, view/Gold acceptance, separately approved live
+validation, actual costs and teardown remain separate work.
+
+
+### Supervised dbt model executor
+
+The owned view runner defaults to scripts/dbt_model_executor.py. It starts one
+fresh Linux dbt worker using the locked analytics interpreter. Credentials and
+AWS clients stay in the parent. The worker verifies its pinned request/project,
+uses the Athena connection/session factory to route requests through the parent,
+and restores its adapter state before reporting model outcomes. It receives no
+AWS credentials and refuses ordinary direct socket connections/DNS lookups.
+
+The inherited local socket carries bounded JSON messages, with no listener or
+published port. The parent routes query operations through ViewController and
+limits catalog work to one database and the three expected relations. It allows
+at most 64 requests total, 32 metadata requests, no additional discovery/history
+pages and at most 12 observed versions per view. Version deletion is confined
+to observed versions older than the four retained versions for the two views.
+Only fields needed by the adapter cross the connection; SDK timestamps remain
+in the parent. Requests and bounded responses are retained before delivery.
+
+The model worker has a 720-second deadline, with a five-second limit on partial
+request frames. The parent always stops/checks its owned process group, including
+worker descendants, on failure or interruption. Deadline handling waits for an
+in-flight bounded SDK/controller operation and its cancellation confirmation;
+it is not an instantaneous hard kill of the parent or a billing guarantee.
+Existing query limits remain unchanged. Initial Spark readback and final source
+observations are outside the model-worker deadline.
+
+scripts/check_dbt_view_runner.py --process-executor exercises this default path
+with real dbt in the child and SDK-validated synthetic responses in the parent.
+It creates no real cloud resources or views. The supported scope is still the
+two view models; dbt data tests, view/Gold acceptance, live IAM/service validation,
+cost reconciliation and approved teardown remain separate work.
