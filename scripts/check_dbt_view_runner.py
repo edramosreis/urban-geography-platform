@@ -19,7 +19,8 @@ from check_athena_control import Clock
 from check_athena_preflight import CALLER, fake_readback, fake_table
 from check_dbt_project import check_manifest
 from check_dbt_views import ViewScenario
-from dbt_view_plan import check_compiled_models
+from dbt_test_plan import test_plan
+from dbt_view_plan import check_compiled_models, normalized_sql
 from dbt_view_runner import run_owned_views
 from prepare_dbt_project import ARTIFACTS, prepare_project, verify_project
 
@@ -31,13 +32,27 @@ SCENARIOS = (
     "catalog_final",
     "replace",
     "watchdog",
+    "test_quality",
+    "test_watchdog",
 )
 EXPECTED_CALLER = CALLER | {"Arn": CALLER["Arn"].replace("-reader/", "-dbt/")}
 
 
 def check(
-    summary: Path, pin: str, output: Path, scenario: str, *, process_executor: bool = False
+    summary: Path,
+    pin: str,
+    output: Path,
+    scenario: str,
+    *,
+    process_executor: bool = False,
+    data_tests: bool = False,
 ) -> dict[str, Any]:
+    if data_tests and (
+        not process_executor or scenario not in {"success", "test_quality", "test_watchdog"}
+    ):
+        raise ValueError("Test-phase scenarios require the supervised executor")
+    if scenario.startswith("test_") and not data_tests:
+        raise ValueError("Select the data-test phase for test scenarios")
     gold = expected_gold(summary, pin)
     resolved = output.resolve()
     if (
@@ -62,6 +77,7 @@ def check(
     output.mkdir(parents=True)
     project = output / "project"
     prepare_project(project, **source["binding"])
+    test_queries = test_plan(project, **source["target"])["queries"] if data_tests else []
     fixtures = output / "fixtures"
     fixtures.mkdir()
     readback = fake_readback(source)
@@ -259,8 +275,17 @@ def check(
                     return {"WorkGroup": group}
                 if operation == "StartQueryExecution":
                     number = len(requests) + 1
+                    testing = normalized_sql(params["QueryString"]).startswith(
+                        "select count(*) as failures"
+                    )
+                    ordinal = 1 + sum(
+                        normalized_sql(r["QueryString"]).startswith("select count(*) as failures")
+                        == testing
+                        for r in requests.values()
+                    )
+                    phase = "tests" if testing else "queries"
                     saved = json.loads(
-                        (output / f"run/queries/query-{number:02}/intent.json").read_text()
+                        (output / f"run/{phase}/query-{ordinal:02}/intent.json").read_text()
                     )
                     if (
                         params != saved["request"]
@@ -284,7 +309,20 @@ def check(
                 state = (
                     "CANCELLED"
                     if query_id in stopped
-                    else ("RUNNING" if scenario == "watchdog" else "SUCCEEDED")
+                    else (
+                        "RUNNING"
+                        if scenario == "watchdog"
+                        or (
+                            scenario == "test_watchdog"
+                            and normalized_sql(request["QueryString"]).startswith(
+                                "select count(*) as failures"
+                            )
+                        )
+                        else "SUCCEEDED"
+                    )
+                )
+                testing = normalized_sql(request["QueryString"]).startswith(
+                    "select count(*) as failures"
                 )
                 if operation == "GetQueryExecution" and params == {"QueryExecutionId": query_id}:
                     return {
@@ -293,7 +331,8 @@ def check(
                             "Query": request["QueryString"],
                             "WorkGroup": request["WorkGroup"],
                             "QueryExecutionContext": request["QueryExecutionContext"],
-                            "StatementType": "DDL",
+                            "StatementType": "DML" if testing else "DDL",
+                            "SubstatementType": "SELECT" if testing else "CREATE_VIEW",
                             "Status": {"State": state}
                             | (
                                 {}
@@ -308,13 +347,46 @@ def check(
                             | {
                                 "OutputLocation": request["ResultConfiguration"]["OutputLocation"]
                                 + query_id
-                                + ".txt"
+                                + (".csv" if testing else ".txt")
                             },
                             "ResultReuseConfiguration": request["ResultReuseConfiguration"],
                             "Statistics": {
-                                "DataScannedInBytes": 0,
+                                "DataScannedInBytes": 4096 if testing else 0,
                                 "ResultReuseInformation": {"ReusedPreviousResult": False},
                             },
+                        }
+                    }
+                if (
+                    operation == "GetQueryResults"
+                    and testing
+                    and params == {"QueryExecutionId": query_id, "MaxResults": 3}
+                ):
+                    name = next(
+                        q["name"]
+                        for q in test_queries
+                        if normalized_sql(q["sql"]) == normalized_sql(request["QueryString"])
+                    )
+                    failures = 1 if scenario == "test_quality" and name == "gold_invariants" else 0
+                    names = ["failures", "should_warn", "should_error"]
+                    values = [
+                        str(failures),
+                        "true" if failures else "false",
+                        "true" if failures else "false",
+                    ]
+                    return {
+                        "ResultSet": {
+                            "ResultSetMetadata": {
+                                "ColumnInfo": [
+                                    {"Name": n, "Type": t}
+                                    for n, t in zip(
+                                        names, ["bigint", "boolean", "boolean"], strict=True
+                                    )
+                                ]
+                            },
+                            "Rows": [
+                                {"Data": [{"VarCharValue": v} for v in row]}
+                                for row in (names, values)
+                            ],
                         }
                     }
                 if operation == "GetQueryResults" and params == {
@@ -375,6 +447,7 @@ def check(
                     caller_arn=EXPECTED_CALLER["Arn"],
                     caller_user_id=EXPECTED_CALLER["UserId"],
                     execute_models=None if process_executor else execute,
+                    data_tests=data_tests,
                     session=session,
                     reader_factory=reader_factory,
                     now=clock.now,
@@ -406,6 +479,18 @@ def check(
             worker_report = json.loads(report_path.read_text())
             dbt_success = worker_report["outcome"]["success"]
             dbt_statuses = worker_report["outcome"]["model_statuses"]
+    test_process = None
+    test_report = None
+    if data_tests:
+        path = output / "run/dbt-tests/process.json"
+        if path.exists():
+            test_process = json.loads(path.read_text())
+            dbt_calls += 1
+            if not test_process["owned_group_stopped"] or test_process["credentials_sent"]:
+                raise ValueError("Test worker cleanup/credentials differ")
+        path = output / "run/dbt-tests/worker-report.json"
+        if path.exists():
+            test_report = json.loads(path.read_text())
     expected_queries = {
         "success": 2,
         "replace": 2,
@@ -414,14 +499,20 @@ def check(
         "wrong_readback": 0,
         "catalog_between": 1,
         "catalog_final": 2,
+        "test_quality": 9,
+        "test_watchdog": 3,
     }[scenario]
+    if data_tests and scenario == "success":
+        expected_queries = 9
     if len(requests) != expected_queries or (report is not None) != (
         scenario in {"success", "replace"}
     ):
         raise ValueError("Wrong query count or acceptance outcome")
     if (error_type is not None) != (scenario not in {"success", "replace"}):
         raise ValueError("Unexpected runner exception")
-    if dbt_calls != (0 if scenario in {"wrong_caller", "wrong_readback"} else 1):
+    if dbt_calls != (
+        2 if data_tests else (0 if scenario in {"wrong_caller", "wrong_readback"} else 1)
+    ):
         raise ValueError("dbt started before the source gate")
     if report is not None:
         assert (
@@ -462,6 +553,24 @@ def check(
             raise ValueError("Worker failure lost owned-query cancellation")
         if not failure["query_control"]["queries"][0]["terminal_confirmed"]:
             raise ValueError("Cancellation was not confirmed before stopping the worker")
+    test_control = (report or failure or {}).get("test_control")
+    if data_tests:
+        if test_control is None:
+            raise ValueError("Missing test phase evidence")
+        if scenario == "success" and (
+            test_control["status"] != "data_tests_passed"
+            or test_control["data_tests_executed"] != 7
+        ):
+            raise ValueError("Tests were not all accepted")
+        if scenario == "test_quality" and (
+            test_control["status"] != "data_tests_failed"
+            or test_control["data_tests_executed"] != 7
+        ):
+            raise ValueError("Quality failures were not distinguished from query errors")
+        if scenario == "test_watchdog" and (
+            len(stopped) != 1 or test_control["queries"][0]["outcome"] != "watchdog_limit"
+        ):
+            raise ValueError("Data-test watchdog did not retain owned cancellation")
     root_pin = hashlib.sha256((output / "run/intent.json").read_bytes()).hexdigest()
     outcome = report if report is not None else failure
     if outcome is None or outcome["run_intent_sha256"] != root_pin:
@@ -483,6 +592,8 @@ def check(
         "stop_requests": len(stopped),
         "worker_process": process,
         "worker_report": worker_report,
+        "test_worker_process": test_process,
+        "test_worker_report": test_report,
         "dbt_success": dbt_success,
         "dbt_model_statuses": dbt_statuses,
         "source_reader_calls": reader_calls,
@@ -495,7 +606,7 @@ def check(
         "spark_started": False,
         "live_source_readback_verified": False,
         "live_view_build_verified": False,
-        "data_tests_executed": 0,
+        "data_tests_executed": test_control["data_tests_executed"] if test_control else 0,
         "scope": "Real dbt/SDK and joined runner; simulated source and AWS responses",
     }
     (output / "trace.json").write_bytes(canonical(trace))
@@ -510,6 +621,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scenario", choices=SCENARIOS, required=True)
     parser.add_argument("--process-executor", action="store_true")
+    parser.add_argument("--data-tests", action="store_true")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -519,6 +631,7 @@ def main() -> None:
                 args.output,
                 args.scenario,
                 process_executor=args.process_executor,
+                data_tests=args.data_tests,
             ),
             indent=2,
         )

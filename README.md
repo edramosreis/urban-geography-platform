@@ -826,12 +826,12 @@ clients, a simulated source reader and synthetic AWS responses. Cases cover
 success, wrong caller, wrong readback, catalog drift between queries and final
 catalog drift. It verifies that initial gates prevent dbt startup, later gates
 block the appropriate submission/receipt, and owned clients/credentials close.
-No AWS request, Spark startup or dbt data-test execution occurs in this check.
+By default no AWS request, Spark startup or dbt data-test execution occurs in this check. The explicit data-test option is described below.
 
 Source-checked model completion is separate from view catalog readback, Gold
 result verification and dbt data-test acceptance. The supervised executor below covers the model process and catalog-call limits.
-Bounded data-test execution, view/Gold acceptance, separately approved live
-validation, actual costs and teardown remain separate work.
+The opt-in bounded data-test phase is described below. View/Gold acceptance,
+separately approved live validation, actual costs and teardown remain separate work.
 
 
 ### Supervised dbt model executor
@@ -862,6 +862,44 @@ observations are outside the model-worker deadline.
 
 scripts/check_dbt_view_runner.py --process-executor exercises this default path
 with real dbt in the child and SDK-validated synthetic responses in the parent.
-It creates no real cloud resources or views. The supported scope is still the
-two view models; dbt data tests, view/Gold acceptance, live IAM/service validation,
-cost reconciliation and approved teardown remain separate work.
+It creates no real cloud resources or views. The default scope is the two view models. The opt-in data-test phase below
+extends the same worker/controller path; view/Gold acceptance, live IAM/service
+validation, cost reconciliation and approved teardown remain separate work.
+
+
+### Bounded dbt data tests
+
+run_owned_views(..., data_tests=True) adds a separate supervised dbt test worker
+only after both view models succeed. The default remains view-only. The seven
+existing tests check five required fact columns, unique building IDs and Gold
+count/share invariants. scripts/dbt_test_plan.py independently renders their
+fixed SQL from the pinned project. scripts/dbt_test_control.py admits each exact
+SELECT once, using the same source gates, workgroup checks, durable query tokens,
+monitoring and cancellation controls. No failure-row table is created.
+
+Each test returns a failure count and two decision flags. The controller accepts
+only one bounded, typed summary with consistent values; pagination, extra rows
+and malformed results are refused. A legitimate nonzero count allows remaining
+tests to finish for diagnostics but prevents the final receipt. Query/protocol
+failures block further submissions. The runner requires all seven observed zero
+counts and matching dbt pass outcomes before its final source check/receipt.
+These checks do not establish view catalog identity or independently verified
+Gold results; those acceptance flags remain false.
+
+The explicit test phase has its own limits: seven queries of at most 16 KiB,
+300 seconds per query shortened by a 600-second session deadline, and the
+existing bounded cancellation confirmation. It reserves the existing 100 MiB
+per-query workgroup cutoff before admitting each query within a proposed 700 MiB
+cumulative scan allowance. This opt-in allowance is separate from the unchanged
+two-view phase; it is an admission control, not a billing hard cap or approval
+to execute cloud queries. The two workers run sequentially, each with the
+existing 720-second process deadline and owned process-group cleanup. Initial
+source readback and final source checks remain separate phases.
+
+scripts/check_dbt_view_runner.py --process-executor --data-tests runs the actual
+locked dbt worker twice using SDK-validated simulated AWS/source responses.
+Scenarios success, test_quality and test_watchdog check seven passing tests,
+a known Gold-quality failure and owned test-query cancellation respectively.
+There are no real AWS requests, live data-quality acceptance or Spark startup
+in these checks. Live IAM/service behavior, view/Gold readback, costs and approved
+teardown remain separate work.
