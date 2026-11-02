@@ -16,6 +16,7 @@ from athena_reader_worker import verified_jars
 from athena_runner import MAX_PLAN_BYTES, check_inputs, pinned_record
 from dbt_test_control import TestController
 from dbt_test_plan import TEST_NAMES, test_plan
+from dbt_view_catalog import observe_views
 from dbt_view_control import ViewController
 from dbt_view_plan import VIEWS, view_build_plan
 from prepare_dbt_project import ARTIFACTS
@@ -75,6 +76,7 @@ def run_view_build(
     snapshot_reader: Callable[..., dict[str, Any]],
     execute_models: ModelExecutor,
     execute_tests: ModelExecutor | None = None,
+    view_readback: bool = False,
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -91,12 +93,15 @@ def run_view_build(
     )
     if not callable(snapshot_reader) or not callable(execute_models):
         raise ValueError("Explicit snapshot reader and model executor are required")
+    if type(view_readback) is not bool:
+        raise ValueError("view_readback must be an explicit boolean")
     output = output.resolve()
     source_plan = plan["source_plan"]
     expected = expected_caller(source_plan["target"]["account_id"], caller_arn, caller_user_id)
     intent = {
         "contract_version": 1,
         "view_plan": plan,
+        "view_readback": view_readback,
         "data_test_plan": test_plan(project, **target) if execute_tests is not None else None,
         "input_path": str(input_path.resolve()),
         "writer_receipt": str(writer_receipt.resolve()),
@@ -109,6 +114,7 @@ def run_view_build(
     initial_verified = False
     control: ViewController | None = None
     tests: TestController | None = None
+    initial_view_pin = final_view_pin = None
     try:
         source = verify_query_source(
             clients["sts"],
@@ -179,6 +185,12 @@ def run_view_build(
         ):
             raise ValueError("Model executor or controlled view queries did not complete")
         save_record(output / "model-outcome.json", result)
+        if view_readback:
+            stage = "view_catalog_readback"
+            initial_view_pin = save_record(
+                output / "view-catalog-initial.json",
+                {"run_intent_sha256": intent_pin, "views": observe_views(clients["glue"], plan)},
+            )
         if execute_tests is not None:
             stage = "data_tests"
             tests = TestController(
@@ -203,8 +215,27 @@ def run_view_build(
                 or tests.report()["status"] != "data_tests_passed"
             ):
                 raise ValueError("dbt data tests did not all pass")
+        if view_readback:
+            stage = "final_view_catalog_readback"
+            assert initial_view_pin is not None
+            initial_views = pinned_record(output / "view-catalog-initial.json", initial_view_pin)
+            final_views = observe_views(clients["glue"], plan)
+            if not same(initial_views["views"], final_views):
+                raise ValueError("View catalog changed after initial readback")
+            final_view_pin = save_record(
+                output / "view-catalog-final.json",
+                {
+                    "run_intent_sha256": intent_pin,
+                    "initial_view_sha256": initial_view_pin,
+                    "views": final_views,
+                },
+            )
         stage = "final_source_gate"
         final_pin = gate("final-gate.json")
+        if view_readback:
+            assert initial_view_pin is not None and final_view_pin is not None
+            pinned_record(output / "view-catalog-initial.json", initial_view_pin)
+            pinned_record(output / "view-catalog-final.json", final_view_pin)
         report = {
             "status": "source_checked_view_build",
             "run_intent_sha256": intent_pin,
@@ -219,13 +250,16 @@ def run_view_build(
             "data_tests_executed": tests.report()["data_tests_executed"] if tests else 0,
             "data_tests_passed": tests is not None,
             "test_control": tests.report() if tests else None,
-            "view_catalog_verified": False,
+            "view_catalog_verified": view_readback,
+            "view_catalog_initial_sha256": initial_view_pin,
+            "view_catalog_final_sha256": final_view_pin,
             "result_verified": False,
             "writer_job_identity_verified": False,
             "query_control": control.report(),
             "scope": (
                 "Observed caller/source and controlled model completion; "
-                "view/Gold acceptance remains separate"
+                "view catalog is checked only when opted in; "
+                "Gold result acceptance remains separate"
             ),
         }
         save_record(output / "receipt.json", report)
@@ -243,6 +277,9 @@ def run_view_build(
                     "result_verified": False,
                     "query_control": control.report() if control else None,
                     "test_control": tests.report() if tests else None,
+                    "view_catalog_verified": False,
+                    "view_catalog_initial_sha256": initial_view_pin,
+                    "view_catalog_final_sha256": final_view_pin,
                 },
             )
         except Exception:
@@ -262,6 +299,7 @@ def run_owned_views(
     caller_user_id: str,
     execute_models: ModelExecutor | None = None,
     data_tests: bool = False,
+    view_readback: bool = False,
     session: Any = None,
     reader_factory: Callable[..., Any] = ReaderProcess,
     now: Callable[[], float] = time.monotonic,
@@ -278,6 +316,8 @@ def run_owned_views(
         caller_arn=caller_arn,
         caller_user_id=caller_user_id,
     )
+    if type(view_readback) is not bool:
+        raise ValueError("view_readback must be an explicit boolean")
     if type(data_tests) is not bool or (data_tests and execute_models is not None):
         raise ValueError("Data tests require the default supervised model executor")
     if (execute_models is not None and not callable(execute_models)) or not callable(
@@ -311,6 +351,7 @@ def run_owned_views(
             snapshot_reader=reader,
             execute_models=executor,
             execute_tests=ProcessExecutor(resources.clients) if data_tests else None,
+            view_readback=view_readback,
             now=now,
             pause=pause,
         )

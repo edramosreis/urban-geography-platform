@@ -66,6 +66,10 @@ def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def invalid_constant(value: str) -> Any:
+    raise ValueError("Non-finite view-definition JSON value")
+
+
 def column_pairs(value: Any, name_key: str, type_key: str) -> list[tuple[str, str]]:
     if (
         not isinstance(value, list)
@@ -140,11 +144,16 @@ def view_state(table: dict[str, Any], plan: dict[str, Any], name: str) -> dict[s
         raise ValueError("Unsupported Athena view encoding")
     try:
         content = base64.b64decode(original[len("/* Presto View: ") : -len(" */")], validate=True)
-        definition = json.loads(content.decode("utf-8"), object_pairs_hook=unique_object)
+        definition = json.loads(
+            content.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=invalid_constant,
+        )
     except (ValueError, UnicodeError, binascii.Error) as error:
         raise ValueError("Malformed Athena view definition") from error
     if (
         not isinstance(definition, dict)
+        or len(canonical(definition)) > 24 * 1024
         or not {"originalSql", "catalog", "schema", "columns"} <= set(definition)
         or set(definition)
         - {"originalSql", "catalog", "schema", "columns", "owner", "runAsInvoker"}
@@ -170,6 +179,8 @@ def view_state(table: dict[str, Any], plan: dict[str, Any], name: str) -> dict[s
         "expanded_text": expanded,
         "definition_sha256": hashlib.sha256(canonical(definition)).hexdigest(),
         "parameters_sha256": hashlib.sha256(canonical(parameters)).hexdigest(),
+        "definition": definition,
+        "parameters": parameters,
         "columns": columns(name),
     }
     # SDK timestamps/HTTP fields are not needed and never enter durable JSON.

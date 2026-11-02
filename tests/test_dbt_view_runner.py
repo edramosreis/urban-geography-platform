@@ -250,3 +250,81 @@ def test_data_test_acceptance_requires_seven_observed_zero_failure_summaries(cas
         failure = json.loads((case.output / "failure.json").read_text())
         assert failure["stage"] == "data_tests"
         assert failure["test_control"]["data_tests_executed"] == (7 if mode == "quality" else 0)
+
+
+@pytest.mark.parametrize(
+    "mode", ["pass", "initial_sql", "final_version", "missing", "proof_changed"]
+)
+def test_catalog_readback_requires_matching_pinned_observations(case, mode):
+    from dbt_catalog_fixtures import encoded, fake_view
+
+    original = case.clients["glue"].get_table.return_value
+    seen = {name: 0 for name in ("grid_proximity", "release_proximity")}
+    plan = RUNNER.view_build_plan(case.project, **case.options["target"])
+
+    def table(**kwargs):
+        name = kwargs["Name"]
+        if name == "building_proximity":
+            return original
+        assert len(case.requests) == 2
+        assert kwargs == {
+            "CatalogId": "123456789012",
+            "DatabaseName": "urban_geo_test_m4",
+            "Name": name,
+        }
+        seen[name] += 1
+        value, definition = fake_view(plan, name)
+        if mode == "missing":
+            raise RuntimeError("Missing observed view")
+        if mode == "initial_sql":
+            definition["originalSql"] = definition["originalSql"].replace("OF 123", "OF 456")
+            value["ViewOriginalText"] = encoded(definition)
+        if mode == "final_version" and seen[name] == 2:
+            value["VersionId"] = "2"
+        if mode == "proof_changed" and seen[name] == 2:
+            (case.output / "view-catalog-initial.json").write_text("changed")
+        return {"Table": value}
+
+    case.clients["glue"].get_table.side_effect = table
+    case.options["view_readback"] = True
+    if mode == "pass":
+        report = run(case)
+        assert report["view_catalog_verified"] and not report["result_verified"]
+        assert seen == {"grid_proximity": 2, "release_proximity": 2}
+        for part in ("initial", "final"):
+            assert (
+                hashlib.sha256((case.output / f"view-catalog-{part}.json").read_bytes()).hexdigest()
+                == report[f"view_catalog_{part}_sha256"]
+            )
+        assert case.clients["glue"].get_table.call_count == 9
+    else:
+        with pytest.raises((ValueError, RuntimeError)):
+            run(case)
+        assert not (case.output / "receipt.json").exists()
+        failure = json.loads((case.output / "failure.json").read_text())
+        assert not failure["view_catalog_verified"]
+        assert failure["stage"] == (
+            "view_catalog_readback"
+            if mode in {"initial_sql", "missing"}
+            else "final_source_gate"
+            if mode == "proof_changed"
+            else "final_view_catalog_readback"
+        )
+    assert len(case.requests) == 2
+    case.clients["athena"].stop_query_execution.assert_not_called()
+
+
+@pytest.mark.parametrize("entry", ["injected", "owned"])
+def test_view_readback_option_is_checked_before_credentials_or_output(case, monkeypatch, entry):
+    resources = Mock(side_effect=AssertionError("No credentials"))
+    monkeypatch.setattr(RUNNER, "query_resources", resources)
+    options = dict(case.options, view_readback="yes")
+    if entry == "owned":
+        del options["snapshot_reader"]
+    with pytest.raises(ValueError, match="explicit boolean"):
+        if entry == "owned":
+            RUNNER.run_owned_views(case.project, case.output, **options)
+        else:
+            RUNNER.run_view_build(case.clients, case.project, case.output, **options)
+    resources.assert_not_called()
+    assert not case.output.exists()

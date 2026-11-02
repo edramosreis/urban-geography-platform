@@ -10,7 +10,7 @@ from athena_runner_fixtures import CALLER as CALLER
 from athena_runner_fixtures import ROOT, trial_case
 from dbt_control_fixtures import PREPARE, VIEWS, metadata, params
 
-for name in ("dbt_test_plan", "dbt_test_control"):
+for name in ("dbt_test_plan", "dbt_test_control", "dbt_view_catalog"):
     spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
