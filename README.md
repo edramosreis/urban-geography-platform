@@ -767,6 +767,39 @@ with dummy credentials, SDK-validated synthetic responses and blocked networking
 It checks creation, replacement/version expiry, table collisions with and without
 full refresh, and query failure. It compares compiled/submitted SQL with the pinned
 source graph and records private traces. No AWS query or dbt data test executes.
-This is an offline adapter check, not a live execution controller: dbt uses its own
-query submission/polling path. Bounded live dbt execution, result acceptance and
-teardown still need implementation and separately approved AWS validation.
+That checker exercises the adapter's default query submission/polling path.
+The query controller below adds a separate injected-client boundary. Live
+source/caller integration, full dbt process supervision, result acceptance and
+teardown remain separate work.
+
+
+### dbt view query control
+
+scripts/dbt_view_plan.py derives two ordered CREATE OR REPLACE VIEW statements
+from the verified prepared project and shared Gold SQL. scripts/dbt_view_control.py
+accepts an injected Athena client and a fresh local journal. It checks the next
+exact view recipe, records a durable request/token before submission, rechecks
+the workgroup and project, and monitors each owned query through the shared
+Athena controller. It blocks further submissions after any failed or uncertain
+outcome. There is no live execution CLI or automatic retry/replay.
+
+The fixed plan admits at most two queries of 16 KiB each, with a 300-second
+per-query watchdog, an earlier 600-second session deadline and the existing
+60-second bounded cancellation confirmation. It accounts for observed scan bytes
+and reserves a full per-query allowance before admitting another query within a
+100 MiB cumulative allowance. These are admission/observation controls, not an
+AWS billing guarantee. The deadline does not supervise dbt's whole process or
+other catalog calls. Use the existing single-attempt, timeout-configured SDK
+factory for the injected client.
+
+Verified terminal DDL metadata is returned to the adapter from the controller's
+cache, followed by at most one bounded DDL results request per query. This keeps
+the adapter from starting its own polling loop. DDL completion does not establish
+source provenance, catalog/view readback, Gold result correctness or dbt test
+acceptance. The existing SELECT recovery command does not accept these view
+intents; uncertain view submissions remain blocked for separate reconciliation.
+
+scripts/check_dbt_view_control.py runs the real locked dbt adapter through this
+boundary with dummy credentials and SDK-validated responses. Offline scenarios
+cover successful views, watchdog cancellation, uncertain submission, metadata
+drift and terminal query failure. No AWS request, dbt data test or Spark job runs.
