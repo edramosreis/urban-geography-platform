@@ -252,7 +252,7 @@ class ViewController:
             plan = self._gate()
             index = len(self._steps)
             if index >= plan["limits"]["max_queries"]:
-                raise ValueError("The two-view submission ceiling has been reached")
+                raise ValueError("The dbt query submission ceiling has been reached")
             source = plan["source_plan"]
             expected = {
                 "QueryString": params.get("QueryString"),

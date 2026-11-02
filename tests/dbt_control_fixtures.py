@@ -59,7 +59,7 @@ def params(controller, index=0):
     }
 
 
-def case(tmp_path, monkeypatch, *, before_submit=None):
+def case(tmp_path, monkeypatch, *, before_submit=None, controller_class=None):
     for module in (CONTROL, VIEWS, PREPARE):
         monkeypatch.setattr(module, "ARTIFACTS", tmp_path)
     project = tmp_path / "project"
@@ -70,7 +70,8 @@ def case(tmp_path, monkeypatch, *, before_submit=None):
     client.get_work_group.return_value = {"WorkGroup": workgroup(ATHENA.read_plan(**OPTIONS))}
     requests = {}
     clock = Clock()
-    control = VIEWS.ViewController(
+    selected = VIEWS.ViewController if controller_class is None else controller_class
+    control = selected(
         client,
         project,
         tmp_path / "run",
