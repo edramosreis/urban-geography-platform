@@ -15,6 +15,7 @@ from athena_control import canonical, write_once
 from athena_read_plan import ARTIFACTS, same, tooling_sdk_pins
 from dbt_adapter_binding import bound_adapter
 from dbt_rpc import RemoteSession
+from dbt_test_plan import check_compiled_tests, test_plan
 from dbt_view_plan import check_compiled_models, check_manifest, view_build_plan
 
 
@@ -49,7 +50,8 @@ def load_request(path: Path, pin: str) -> dict[str, Any]:
         or project.resolve().is_relative_to(output.resolve())
     ):
         raise ValueError("dbt worker output/project overlap or escape")
-    plan = view_build_plan(project, **value["view_plan"]["source_plan"]["target"])
+    builder = test_plan if value["view_plan"].get("kind") == "data_tests" else view_build_plan
+    plan = builder(project, **value["view_plan"]["source_plan"]["target"])
     if (
         not same(plan, value["view_plan"])
         or hashlib.sha256(canonical(plan)).hexdigest() != value["controller_intent_sha256"]
@@ -105,6 +107,7 @@ def run(request: dict[str, Any], pin: str, channel: socket.socket) -> dict[str, 
     write_once(profiles / "profiles.yml", canonical(profile))
     settings = profile["urban_geo_athena"]["outputs"]["prepared_athena"]
     remote = RemoteSession(channel, time.monotonic() + 720)
+    testing = request["view_plan"].get("kind") == "data_tests"
     with bound_adapter(remote, settings):
         result = dbtRunner().invoke(
             [
@@ -112,7 +115,7 @@ def run(request: dict[str, Any], pin: str, channel: socket.socket) -> dict[str, 
                 "--no-partial-parse",
                 "--log-path",
                 str(output / "logs"),
-                "run",
+                "test" if testing else "run",
                 "--project-dir",
                 str(project),
                 "--profiles-dir",
@@ -120,7 +123,7 @@ def run(request: dict[str, Any], pin: str, channel: socket.socket) -> dict[str, 
                 "--target-path",
                 str(output / "target"),
                 "--select",
-                "grid_proximity release_proximity",
+                "test_type:data" if testing else "grid_proximity release_proximity",
             ]
         )
     if network_attempts:
@@ -128,14 +131,27 @@ def run(request: dict[str, Any], pin: str, channel: socket.socket) -> dict[str, 
     manifest = bounded_json(output / "target/manifest.json", 4 * 1024 * 1024)
     results = bounded_json(output / "target/run_results.json", 128 * 1024)
     check_manifest(manifest, project, request["view_plan"]["source_plan"]["binding"])
-    check_compiled_models(manifest, request["view_plan"]["source_plan"]["binding"])
-    statuses = {r["unique_id"].split(".")[-1]: r["status"] for r in results["results"]}
-    plan = view_build_plan(project, **request["view_plan"]["source_plan"]["target"])
+    if testing:
+        check_compiled_tests(manifest, request["view_plan"]["source_plan"]["binding"])
+        nodes = manifest["nodes"]
+        statuses = {nodes[r["unique_id"]]["name"]: r["status"] for r in results["results"]}
+        failures = {nodes[r["unique_id"]]["name"]: r["failures"] for r in results["results"]}
+        outcome = {
+            "success": result.success is True,
+            "test_statuses": statuses,
+            "failure_counts": failures,
+        }
+    else:
+        check_compiled_models(manifest, request["view_plan"]["source_plan"]["binding"])
+        statuses = {r["unique_id"].split(".")[-1]: r["status"] for r in results["results"]}
+        outcome = {"success": result.success is True, "model_statuses": statuses}
+    builder = test_plan if testing else view_build_plan
+    plan = builder(project, **request["view_plan"]["source_plan"]["target"])
     if not same(plan, request["view_plan"]):
         raise ValueError("Prepared project changed during dbt")
     return {
         "request_sha256": pin,
-        "outcome": {"success": result.success is True, "model_statuses": statuses},
+        "outcome": outcome,
         "binding_restored": True,
         "network_attempts": len(network_attempts),
         "credentials_received": False,

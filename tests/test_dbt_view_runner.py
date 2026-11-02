@@ -195,3 +195,58 @@ def test_stale_reader_runtime_fails_before_credentials(case, monkeypatch):
         RUNNER.run_owned_views(case.project, case.output, **options)
     resources.assert_not_called()
     assert not case.output.exists()
+
+
+@pytest.mark.parametrize("mode", ["pass", "quality", "missing_queries"])
+def test_data_test_acceptance_requires_seven_observed_zero_failure_summaries(case, mode):
+    from dbt_control_fixtures import metadata, params
+    from dbt_data_test_fixtures import PLAN, summary
+    from dbt_view_plan import normalized_sql
+
+    def observed(**kwargs):
+        identity = kwargs["QueryExecutionId"]
+        request = case.requests[identity]
+        testing = normalized_sql(request["QueryString"]).startswith("select count(*) as failures")
+        response = metadata(request, identity, scanned=4096 if testing else 0)
+        if testing:
+            response["QueryExecution"]["StatementType"] = "DML"
+            response["QueryExecution"]["SubstatementType"] = "SELECT"
+            response["QueryExecution"]["ResultConfiguration"]["OutputLocation"] = (
+                request["ResultConfiguration"]["OutputLocation"] + identity + ".csv"
+            )
+        return response
+
+    case.clients["athena"].get_query_execution.side_effect = observed
+    counts = {name: 0 for name in PLAN.TEST_NAMES}
+    if mode == "quality":
+        counts["gold_invariants"] = 1
+
+    def execute_tests(control, path):
+        path.mkdir()
+        if mode != "missing_queries":
+            for index, q in enumerate(control.plan()["queries"]):
+                case.clients["athena"].get_query_results.return_value = summary(counts[q["name"]])
+                identity = control.start_query_execution(**params(control, index))[
+                    "QueryExecutionId"
+                ]
+                control.get_query_execution(QueryExecutionId=identity)
+                control.get_query_results(QueryExecutionId=identity)
+        return {
+            "success": mode != "quality",
+            "test_statuses": {name: "fail" if n else "pass" for name, n in counts.items()},
+            "failure_counts": counts,
+        }
+
+    case.options["execute_tests"] = execute_tests
+    if mode == "pass":
+        report = run(case)
+        assert report["data_tests_passed"] and report["data_tests_executed"] == 7
+        assert len(case.requests) == 9 and not report["result_verified"]
+        assert (case.output / "submission-gate-09.json").exists()
+    else:
+        with pytest.raises(ValueError, match="did not all pass"):
+            run(case)
+        assert not (case.output / "receipt.json").exists()
+        failure = json.loads((case.output / "failure.json").read_text())
+        assert failure["stage"] == "data_tests"
+        assert failure["test_control"]["data_tests_executed"] == (7 if mode == "quality" else 0)

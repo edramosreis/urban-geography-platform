@@ -10,6 +10,13 @@ from athena_runner_fixtures import CALLER as CALLER
 from athena_runner_fixtures import ROOT, trial_case
 from dbt_control_fixtures import PREPARE, VIEWS, metadata, params
 
+for name in ("dbt_test_plan", "dbt_test_control"):
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+
 SPEC = importlib.util.spec_from_file_location(
     "dbt_view_runner", ROOT / "scripts/dbt_view_runner.py"
 )
@@ -37,7 +44,16 @@ def runner_case(tmp_path, monkeypatch):
         number = len(requests) + 1
         assert base.reader.called
         assert (output / f"submission-gate-{number:02}.json").exists()
-        saved = json.loads((output / f"queries/query-{number:02}/intent.json").read_text())
+        testing = VIEWS.normalized_sql(request["QueryString"]).startswith(
+            "select count(*) as failures"
+        )
+        ordinal = 1 + sum(
+            VIEWS.normalized_sql(r["QueryString"]).startswith("select count(*) as failures")
+            == testing
+            for r in requests.values()
+        )
+        phase = "tests" if testing else "queries"
+        saved = json.loads((output / f"{phase}/query-{ordinal:02}/intent.json").read_text())
         assert saved["request"] == request
         identity = "view-" + str(number)
         requests[identity] = request

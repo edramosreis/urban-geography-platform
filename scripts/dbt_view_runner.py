@@ -14,6 +14,8 @@ from athena_read_plan import same
 from athena_reader import WORKER_PYTHON, ReaderProcess
 from athena_reader_worker import verified_jars
 from athena_runner import MAX_PLAN_BYTES, check_inputs, pinned_record
+from dbt_test_control import TestController
+from dbt_test_plan import TEST_NAMES, test_plan
 from dbt_view_control import ViewController
 from dbt_view_plan import VIEWS, view_build_plan
 from prepare_dbt_project import ARTIFACTS
@@ -72,6 +74,7 @@ def run_view_build(
     caller_user_id: str,
     snapshot_reader: Callable[..., dict[str, Any]],
     execute_models: ModelExecutor,
+    execute_tests: ModelExecutor | None = None,
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -94,6 +97,7 @@ def run_view_build(
     intent = {
         "contract_version": 1,
         "view_plan": plan,
+        "data_test_plan": test_plan(project, **target) if execute_tests is not None else None,
         "input_path": str(input_path.resolve()),
         "writer_receipt": str(writer_receipt.resolve()),
         "writer_receipt_sha256": writer_receipt_sha256,
@@ -104,6 +108,7 @@ def run_view_build(
     stage = "source_preflight"
     initial_verified = False
     control: ViewController | None = None
+    tests: TestController | None = None
     try:
         source = verify_query_source(
             clients["sts"],
@@ -174,6 +179,30 @@ def run_view_build(
         ):
             raise ValueError("Model executor or controlled view queries did not complete")
         save_record(output / "model-outcome.json", result)
+        if execute_tests is not None:
+            stage = "data_tests"
+            tests = TestController(
+                clients["athena"],
+                project,
+                output / "tests",
+                **source_plan["target"],
+                now=now,
+                pause=pause,
+                before_submit=before_submit,
+            )
+            with tests.session():
+                test_result = execute_tests(tests, output / "dbt-tests")
+            save_record(output / "test-outcome.json", test_result)
+            expected_tests = {
+                "success": True,
+                "test_statuses": {name: "pass" for name in TEST_NAMES},
+                "failure_counts": {name: 0 for name in TEST_NAMES},
+            }
+            if (
+                not same(test_result, expected_tests)
+                or tests.report()["status"] != "data_tests_passed"
+            ):
+                raise ValueError("dbt data tests did not all pass")
         stage = "final_source_gate"
         final_pin = gate("final-gate.json")
         report = {
@@ -187,6 +216,9 @@ def run_view_build(
             "source_catalog_stable": True,
             "controlled_view_queries_completed": True,
             "models_succeeded": True,
+            "data_tests_executed": tests.report()["data_tests_executed"] if tests else 0,
+            "data_tests_passed": tests is not None,
+            "test_control": tests.report() if tests else None,
             "view_catalog_verified": False,
             "result_verified": False,
             "writer_job_identity_verified": False,
@@ -210,6 +242,7 @@ def run_view_build(
                     "initial_source_verified": initial_verified,
                     "result_verified": False,
                     "query_control": control.report() if control else None,
+                    "test_control": tests.report() if tests else None,
                 },
             )
         except Exception:
@@ -228,6 +261,7 @@ def run_owned_views(
     caller_arn: str,
     caller_user_id: str,
     execute_models: ModelExecutor | None = None,
+    data_tests: bool = False,
     session: Any = None,
     reader_factory: Callable[..., Any] = ReaderProcess,
     now: Callable[[], float] = time.monotonic,
@@ -244,6 +278,8 @@ def run_owned_views(
         caller_arn=caller_arn,
         caller_user_id=caller_user_id,
     )
+    if type(data_tests) is not bool or (data_tests and execute_models is not None):
+        raise ValueError("Data tests require the default supervised model executor")
     if (execute_models is not None and not callable(execute_models)) or not callable(
         reader_factory
     ):
@@ -274,6 +310,7 @@ def run_owned_views(
             caller_user_id=caller_user_id,
             snapshot_reader=reader,
             execute_models=executor,
+            execute_tests=ProcessExecutor(resources.clients) if data_tests else None,
             now=now,
             pause=pause,
         )

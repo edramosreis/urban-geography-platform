@@ -10,6 +10,8 @@ for name in (
     "athena_reader_worker",
     "athena_reader",
     "dbt_adapter_binding",
+    "dbt_test_plan",
+    "dbt_test_control",
     "dbt_model_worker",
     "dbt_model_executor",
 ):
