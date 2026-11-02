@@ -137,6 +137,7 @@ class ViewController:
         region: str = "eu-west-1",
         now: Callable[[], float] = time.monotonic,
         pause: Callable[[float], None] = time.sleep,
+        before_submit: Callable[[], None] | None = None,
     ) -> None:
         plan = view_build_plan(
             project, deployment_name=deployment_name, account_id=account_id, region=region
@@ -154,6 +155,7 @@ class ViewController:
         self.client, self.project, self.output = client, project, resolved
         self.target = dict(deployment_name=deployment_name, account_id=account_id, region=region)
         self.now, self.pause = now, pause
+        self._before_submit = before_submit
         self._content = canonical(plan)
         self.intent_sha256 = hashlib.sha256(self._content).hexdigest()
         self.deadline = now() + plan["limits"]["wall_seconds"]
@@ -263,6 +265,8 @@ class ViewController:
             if self._scanned + cap > plan["limits"]["max_total_scan_bytes"]:
                 raise RuntimeError("Insufficient remaining cumulative scan allowance")
             preflight_workgroup(self.client, source)
+            if self._before_submit is not None:
+                self._before_submit()
             self._gate()  # Includes project/clock drift during workgroup preflight.
             request = {
                 **params,

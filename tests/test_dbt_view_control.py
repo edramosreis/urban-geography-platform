@@ -262,3 +262,36 @@ def test_interrupt_after_known_identity_keeps_owned_cleanup(fixture):
     assert (f.control.output / "query-01/query.json").exists()
     assert "stop_observation" in (f.control.output / "query-01/events.jsonl").read_text()
     assert f.control.report()["blocked"]
+
+
+def test_external_source_gate_runs_before_each_submission_and_blocks_without_a_token(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def source_gate():
+        calls.append(len(f.requests))
+        if len(calls) == 2:
+            raise ValueError("Source catalog changed")
+
+    f = case(tmp_path, monkeypatch, before_submit=source_gate)
+    with f.control.session():
+        f.control.start_query_execution(**params(f.control))
+        with pytest.raises(ValueError, match="Source catalog changed"):
+            f.control.start_query_execution(**params(f.control, 1))
+    assert calls == [0, 1]
+    f.client.start_query_execution.assert_called_once()
+    assert not (f.control.output / "query-02").exists()
+    f.client.stop_query_execution.assert_not_called()
+
+
+def test_project_and_clock_are_rechecked_after_the_external_gate(tmp_path, monkeypatch):
+    def delayed_gate():
+        f.clock.value = 601
+
+    f = case(tmp_path, monkeypatch, before_submit=delayed_gate)
+    with f.control.session():
+        with pytest.raises(RuntimeError, match="deadline"):
+            f.control.start_query_execution(**params(f.control))
+    f.client.start_query_execution.assert_not_called()
+    assert not (f.control.output / "query-01").exists()

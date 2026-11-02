@@ -59,7 +59,7 @@ def params(controller, index=0):
     }
 
 
-def case(tmp_path, monkeypatch):
+def case(tmp_path, monkeypatch, *, before_submit=None):
     for module in (CONTROL, VIEWS, PREPARE):
         monkeypatch.setattr(module, "ARTIFACTS", tmp_path)
     project = tmp_path / "project"
@@ -78,6 +78,7 @@ def case(tmp_path, monkeypatch):
         account_id=OPTIONS["account_id"],
         now=clock.now,
         pause=clock.pause,
+        before_submit=before_submit,
     )
 
     def start(**request):
