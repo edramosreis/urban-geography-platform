@@ -932,7 +932,8 @@ successful receipt sets view_catalog_verified=true. This means the supported
 definitions matched at both observations. Separate catalog calls are not an
 atomic snapshot or a lock: intervening/restored changes or later changes are
 not excluded. It does not establish the writer identity, whole-role security
-or independent Gold-result correctness; result_verified remains false.
+or independent Gold-result correctness. The optional release-result phase below
+adds a separate comparison; without that option result_verified remains false.
 
 This adds at most four exact Glue GetTable calls, with no new Athena query,
 client, IAM permission or data-scan allowance. A failed readback preserves the
@@ -944,4 +945,51 @@ view_sql and view_drift exercise matching views, a wrong source snapshot before
 data tests and a version change after all seven tests pass. These checks execute
 no real AWS request or Spark job. Actual Athena catalog encoding/SQL formatting,
 service permissions and Gold results still need separately approved live
-validation. Independent Gold result comparison is the next acceptance step.
+validation. The optional release-result phase below adds the separate reference comparison.
+
+
+### Release-view result comparison
+
+run_owned_views(..., data_tests=True, view_readback=True, gold_results=True)
+adds one parent-owned SELECT from release_proximity after both models and all
+seven data tests succeed. scripts/dbt_gold_result.py uses the existing query
+controller to own its exact SQL/request/token and monitor/cancel it. This phase
+runs through the existing Athena client; it starts no additional dbt worker.
+Gold verification requires the test/readback options and defaults to false.
+
+The query returns at most two release groups so unexpected extra groups cause
+rejection. Its one permitted GetQueryResults call requests at most three rows
+(header, expected row, extra-row sentinel). The controller requires the exact
+six columns/types and one non-null row, with no continuation page. It reuses
+the existing pinned-summary comparison: release, area, run hash and integer
+building counts must match exactly; the finite share must agree within 1e-12.
+The reference is the retained processing summary, read independently of this
+new Athena query. This compares release totals/share; it does not establish
+per-grid equality or revalidate the spatial classification.
+
+Terminal query metadata is checked again before and after result retrieval.
+The reference/request pins are rechecked, and the bounded response and comparison
+proof are saved. The runner still requires its final unchanged-view observations
+and caller/source gates, then rechecks proof/response hashes before writing an
+acceptance receipt. Only this completed opt-in path sets result_verified=true.
+A later gate failure can retain a successful comparison as partial evidence but
+still withholds the runner receipt. There is no rollback or automatic replay.
+
+The extra phase admits one query of at most 16 KiB, with the existing 100 MiB
+per-query cutoff and a separate proposed 100 MiB scan-admission allowance,
+a 300-second query watchdog shortened by a 600-second session deadline, and
+bounded cancellation confirmation. LIMIT bounds returned groups, not bytes
+scanned to calculate them. Existing phase limits/defaults are unchanged. The
+allowance is opt-in preparation, not AWS execution approval or a billing cap.
+Results are limited to 64 KiB after the SDK call returns; this is not an HTTP
+streaming byte cap. No S3 client or new IAM policy is added. GetQueryResults
+still requires the role's existing scoped S3 GetObject permission for results.
+
+scripts/check_dbt_view_runner.py --process-executor --data-tests --view-readback
+--gold-results uses actual dbt workers with SDK-validated synthetic AWS/source
+responses. Cases cover a matching row, wrong count, extra row, Gold-query
+watchdog and final view drift after a matching comparison. A default-path check
+keeps the two-model behavior unchanged. No real AWS query, Spark job or live
+cross-engine/result acceptance occurs. The conservative view-catalog format
+profile and live permission/service checks remain unvalidated. An approved AWS
+trial, measured costs and verified teardown remain separate work.

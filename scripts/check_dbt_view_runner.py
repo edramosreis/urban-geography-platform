@@ -15,11 +15,12 @@ from unittest.mock import patch
 
 from athena_control import canonical
 from athena_read_plan import read_plan, tooling_sdk_pins
-from athena_results import expected_gold
+from athena_results import COLUMNS, expected_gold
 from check_athena_control import Clock
 from check_athena_preflight import CALLER, fake_readback, fake_table
 from check_dbt_project import check_manifest
 from check_dbt_views import ViewScenario
+from dbt_gold_result import gold_result_plan
 from dbt_test_plan import test_plan
 from dbt_view_plan import check_compiled_models, compiled_models, normalized_sql
 from dbt_view_runner import run_owned_views
@@ -37,6 +38,9 @@ SCENARIOS = (
     "test_watchdog",
     "view_sql",
     "view_drift",
+    "gold_wrong",
+    "gold_extra",
+    "gold_watchdog",
 )
 EXPECTED_CALLER = CALLER | {"Arn": CALLER["Arn"].replace("-reader/", "-dbt/")}
 
@@ -85,12 +89,29 @@ def check(
     process_executor: bool = False,
     data_tests: bool = False,
     view_readback: bool = False,
+    gold_results: bool = False,
 ) -> dict[str, Any]:
     if data_tests and (
         not process_executor
-        or scenario not in {"success", "test_quality", "test_watchdog", "view_sql", "view_drift"}
+        or scenario
+        not in {
+            "success",
+            "test_quality",
+            "test_watchdog",
+            "view_sql",
+            "view_drift",
+            "gold_wrong",
+            "gold_extra",
+            "gold_watchdog",
+        }
     ):
         raise ValueError("Test-phase scenarios require the supervised executor")
+    if gold_results and not (process_executor and data_tests and view_readback):
+        raise ValueError(
+            "Gold scenarios require the supervised executor, data tests and view readback"
+        )
+    if scenario.startswith("gold_") and not gold_results:
+        raise ValueError("Select the Gold-result phase for Gold scenarios")
     if scenario.startswith("view_") and (not process_executor or not view_readback):
         raise ValueError(
             "View-readback scenarios require the supervised executor and readback flag"
@@ -122,6 +143,17 @@ def check(
     project = output / "project"
     prepare_project(project, **source["binding"])
     test_queries = test_plan(project, **source["target"])["queries"] if data_tests else []
+    gold_sql = (
+        gold_result_plan(project, **source["target"])["queries"][0]["sql"] if gold_results else None
+    )
+
+    def query_phase(sql: str) -> str:
+        if gold_sql is not None and normalized_sql(sql) == normalized_sql(gold_sql):
+            return "gold"
+        return (
+            "tests" if normalized_sql(sql).startswith("select count(*) as failures") else "queries"
+        )
+
     fixtures = output / "fixtures"
     fixtures.mkdir()
     readback = fake_readback(source)
@@ -356,15 +388,10 @@ def check(
                     return {"WorkGroup": group}
                 if operation == "StartQueryExecution":
                     number = len(requests) + 1
-                    testing = normalized_sql(params["QueryString"]).startswith(
-                        "select count(*) as failures"
-                    )
+                    phase = query_phase(params["QueryString"])
                     ordinal = 1 + sum(
-                        normalized_sql(r["QueryString"]).startswith("select count(*) as failures")
-                        == testing
-                        for r in requests.values()
+                        query_phase(r["QueryString"]) == phase for r in requests.values()
                     )
-                    phase = "tests" if testing else "queries"
                     saved = json.loads(
                         (output / f"run/{phase}/query-{ordinal:02}/intent.json").read_text()
                     )
@@ -394,6 +421,10 @@ def check(
                         "RUNNING"
                         if scenario == "watchdog"
                         or (
+                            scenario == "gold_watchdog"
+                            and query_phase(request["QueryString"]) == "gold"
+                        )
+                        or (
                             scenario == "test_watchdog"
                             and normalized_sql(request["QueryString"]).startswith(
                                 "select count(*) as failures"
@@ -405,6 +436,7 @@ def check(
                 testing = normalized_sql(request["QueryString"]).startswith(
                     "select count(*) as failures"
                 )
+                reading_gold = query_phase(request["QueryString"]) == "gold"
                 if operation == "GetQueryExecution" and params == {"QueryExecutionId": query_id}:
                     return {
                         "QueryExecution": {
@@ -412,8 +444,10 @@ def check(
                             "Query": request["QueryString"],
                             "WorkGroup": request["WorkGroup"],
                             "QueryExecutionContext": request["QueryExecutionContext"],
-                            "StatementType": "DML" if testing else "DDL",
-                            "SubstatementType": "SELECT" if testing else "CREATE_VIEW",
+                            "StatementType": "DML" if testing or reading_gold else "DDL",
+                            "SubstatementType": "SELECT"
+                            if testing or reading_gold
+                            else "CREATE_VIEW",
                             "Status": {"State": state}
                             | (
                                 {}
@@ -428,14 +462,45 @@ def check(
                             | {
                                 "OutputLocation": request["ResultConfiguration"]["OutputLocation"]
                                 + query_id
-                                + (".csv" if testing else ".txt")
+                                + (".csv" if testing or reading_gold else ".txt")
                             },
                             "ResultReuseConfiguration": request["ResultReuseConfiguration"],
                             "Statistics": {
-                                "DataScannedInBytes": 4096 if testing else 0,
+                                "DataScannedInBytes": 4096 if testing or reading_gold else 0,
                                 "ResultReuseInformation": {"ReusedPreviousResult": False},
                             },
                         }
+                    }
+                if (
+                    operation == "GetQueryResults"
+                    and reading_gold
+                    and params == {"QueryExecutionId": query_id, "MaxResults": 3}
+                ):
+                    values = [str(gold[n]) for n in COLUMNS]
+                    if scenario == "gold_wrong":
+                        values[3] = str(gold["mapped_buildings"] + 1)
+                        values[5] = str(gold["buildings_within"] / (gold["mapped_buildings"] + 1))
+                    rows = [
+                        {"Data": [{"VarCharValue": v} for v in row]}
+                        for row in (list(COLUMNS), values)
+                    ]
+                    if scenario == "gold_extra":
+                        rows.append(copy.deepcopy(rows[1]))
+                    return {
+                        "ResultSet": {
+                            "Rows": rows,
+                            "ResultSetMetadata": {
+                                "ColumnInfo": [
+                                    {"Name": n, "Type": t}
+                                    for n, t in zip(
+                                        COLUMNS,
+                                        ["varchar"] * 3 + ["bigint", "bigint", "double"],
+                                        strict=True,
+                                    )
+                                ]
+                            },
+                        },
+                        "UpdateCount": 0,
                     }
                 if (
                     operation == "GetQueryResults"
@@ -530,6 +595,7 @@ def check(
                     execute_models=None if process_executor else execute,
                     data_tests=data_tests,
                     view_readback=view_readback,
+                    gold_results=gold_results,
                     session=session,
                     reader_factory=reader_factory,
                     now=clock.now,
@@ -585,9 +651,20 @@ def check(
         "test_watchdog": 3,
         "view_sql": 2,
         "view_drift": 9 if data_tests else 2,
+        "gold_wrong": 9,
+        "gold_extra": 9,
+        "gold_watchdog": 9,
     }[scenario]
     if data_tests and scenario == "success":
         expected_queries = 9
+    if gold_results and scenario in {
+        "success",
+        "view_drift",
+        "gold_wrong",
+        "gold_extra",
+        "gold_watchdog",
+    }:
+        expected_queries += 1
     if len(requests) != expected_queries or (report is not None) != (
         scenario in {"success", "replace"}
     ):
@@ -604,7 +681,7 @@ def check(
         assert (
             report["caller_identity_verified"]
             and report["source_readback_verified"]
-            and not report["result_verified"]
+            and report["result_verified"] is gold_results
             and report["view_catalog_verified"] is view_readback
         )
     elif (output / "run/receipt.json").exists():
@@ -679,6 +756,31 @@ def check(
             and (test_control is None or test_control["status"] != "data_tests_passed")
         ):
             raise ValueError("Final view drift was not isolated from data-test success")
+    gold_control = (report or failure or {}).get("gold_control")
+    if gold_results and scenario in {
+        "success",
+        "gold_wrong",
+        "gold_extra",
+        "gold_watchdog",
+        "view_drift",
+    }:
+        if gold_control is None:
+            raise ValueError("Missing Gold query evidence")
+        matched = scenario in {"success", "view_drift"}
+        if gold_control["result_verified"] is not matched:
+            raise ValueError("Gold phase acceptance differs from the observed row")
+        if scenario.startswith("gold_") and (
+            failure is None or failure["stage"] != "gold_result" or failure["result_verified"]
+        ):
+            raise ValueError("Rejected Gold phase wrote an acceptance receipt")
+        if scenario.startswith("gold_") and sum(view_reads.values()) != 2:
+            raise ValueError("Final catalog acceptance ran after a rejected Gold result")
+        if scenario == "gold_watchdog" and (
+            len(stopped) != 1
+            or gold_control["queries"][0]["outcome"] != "watchdog_limit"
+            or not gold_control["queries"][0]["terminal_confirmed"]
+        ):
+            raise ValueError("Gold-query cancellation was not owned/confirmed")
     root_pin = hashlib.sha256((output / "run/intent.json").read_bytes()).hexdigest()
     outcome = report if report is not None else failure
     if outcome is None or outcome["run_intent_sha256"] != root_pin:
@@ -695,6 +797,10 @@ def check(
             content = (output / f"run/view-catalog-{phase}.json").read_bytes()
             if hashlib.sha256(content).hexdigest() != report[f"view_catalog_{phase}_sha256"]:
                 raise ValueError("Receipt is not bound to view-readback evidence")
+    if report is not None and gold_results:
+        content = (output / "run/gold-result-verification.json").read_bytes()
+        if hashlib.sha256(content).hexdigest() != report["gold_result_verification_sha256"]:
+            raise ValueError("Receipt is not bound to the Gold result proof")
     verify_project(project)
     final = {
         "scenario": scenario,
@@ -711,6 +817,8 @@ def check(
         "dbt_model_statuses": dbt_statuses,
         "source_reader_calls": reader_calls,
         "view_readback_enabled": view_readback,
+        "gold_results_enabled": gold_results,
+        "live_gold_result_verified": False,
         "view_catalog_reads": sum(view_reads.values()),
         "live_view_catalog_verified": False,
         "source_readback_simulated": True,
@@ -739,6 +847,7 @@ def main() -> None:
     parser.add_argument("--process-executor", action="store_true")
     parser.add_argument("--data-tests", action="store_true")
     parser.add_argument("--view-readback", action="store_true")
+    parser.add_argument("--gold-results", action="store_true")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -750,6 +859,7 @@ def main() -> None:
                 process_executor=args.process_executor,
                 data_tests=args.data_tests,
                 view_readback=args.view_readback,
+                gold_results=args.gold_results,
             ),
             indent=2,
         )
