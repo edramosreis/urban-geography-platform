@@ -803,3 +803,32 @@ scripts/check_dbt_view_control.py runs the real locked dbt adapter through this
 boundary with dummy credentials and SDK-validated responses. Offline scenarios
 cover successful views, watchdog cancellation, uncertain submission, metadata
 drift and terminal query failure. No AWS request, dbt data test or Spark job runs.
+
+
+### Source-checked dbt view builds
+
+scripts/dbt_view_runner.py joins the view controller to the existing caller,
+Glue catalog and exact Iceberg snapshot-readback checks. It validates local inputs
+and expected identity, verifies the source before entering the model executor,
+and rechecks the caller, source catalog, input/receipt pins and prepared project
+before each view submission and after both models. A rejected gate prevents
+another token/submission; a failed final gate produces no acceptance receipt.
+Saved intent, source proof and final-gate hashes bind the resulting receipt.
+
+Its owned-resource entry point uses the existing frozen-credential SDK clients
+and isolated Spark reader, checks the default reader runtime before credentials,
+and closes clients/clears the credential environment on every exit. The model
+executor is an explicit dependency. There is no live execution CLI or automatic
+rollback: a rejected run can leave an already created/replaced first view.
+
+scripts/check_dbt_view_runner.py supplies the real locked dbt adapter and SDK
+clients, a simulated source reader and synthetic AWS responses. Cases cover
+success, wrong caller, wrong readback, catalog drift between queries and final
+catalog drift. It verifies that initial gates prevent dbt startup, later gates
+block the appropriate submission/receipt, and owned clients/credentials close.
+No AWS request, Spark startup or dbt data-test execution occurs in this check.
+
+Source-checked model completion is separate from view catalog readback, Gold
+result verification and dbt data-test acceptance. A production model-executor
+integration and supervision of the whole dbt process/other metadata calls remain
+future work, along with separately approved live validation, costs and teardown.
