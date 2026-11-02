@@ -139,7 +139,7 @@ class ViewController:
         pause: Callable[[float], None] = time.sleep,
         before_submit: Callable[[], None] | None = None,
     ) -> None:
-        plan = view_build_plan(
+        plan = self.make_plan(
             project, deployment_name=deployment_name, account_id=account_id, region=region
         )
         resolved = output.resolve()
@@ -167,6 +167,20 @@ class ViewController:
         resolved.mkdir(parents=True)
         write_once(resolved / "intent.json", self._content)
 
+    def make_plan(self, project: Path, **target: str) -> dict[str, Any]:
+        return view_build_plan(project, **target)
+
+    def select_recipe(self, plan: dict[str, Any], sql: str, index: int) -> dict[str, Any]:
+        recipe: dict[str, Any] = plan["queries"][index]
+        if normalized_sql(sql) != normalized_sql(recipe["sql"]):
+            raise ValueError("dbt query differs from the next fixed view recipe")
+        return recipe
+
+    def inspect_execution(
+        self, raw: dict[str, Any], request: dict[str, Any], identity: str
+    ) -> dict[str, Any]:
+        return ddl_observation(raw, request, identity)
+
     def plan(self) -> dict[str, Any]:
         path = self.output / "intent.json"
         if (
@@ -179,7 +193,7 @@ class ViewController:
 
     def _unchanged(self) -> dict[str, Any]:
         plan = self.plan()
-        if not same(view_build_plan(self.project, **self.target), plan):
+        if not same(self.make_plan(self.project, **self.target), plan):
             raise ValueError("Prepared project or view recipe changed")
         return plan
 
@@ -254,10 +268,9 @@ class ViewController:
                 params != expected
                 or not isinstance(params.get("QueryString"), str)
                 or len(params["QueryString"].encode()) > plan["limits"]["max_query_bytes"]
-                or normalized_sql(params["QueryString"])
-                != normalized_sql(plan["queries"][index]["sql"])
             ):
                 raise ValueError("dbt query differs from the next fixed view recipe")
+            recipe = self.select_recipe(plan, params["QueryString"], index)
             cap = source["workgroup"]["Configuration"]["BytesScannedCutoffPerQuery"]
             # Reserve a whole per-query allowance before admitting another query.
             # This two-DDL plan expects zero scans; any positive first scan leaves
@@ -282,7 +295,7 @@ class ViewController:
                 self.output / f"query-{index + 1:02}", self.intent_sha256, query_plan, request
             )
             step: dict[str, Any] = {
-                "name": plan["queries"][index]["name"],
+                "name": recipe["name"],
                 "intent_sha256": attempt.intent_sha256,
             }
             self._steps.append(step)
@@ -316,7 +329,7 @@ class ViewController:
             ) -> dict[str, Any]:
                 nonlocal highest_scan
                 raw = client.get_query_execution(QueryExecutionId=identity)
-                checked = ddl_observation(raw, saved, identity)
+                checked = self.inspect_execution(raw, saved, identity)
                 scanned = checked["data_scanned_bytes"]
                 if scanned is not None:
                     if scanned < highest_scan:

@@ -104,7 +104,12 @@ class SubmissionUnknown(RuntimeError):
 
 
 def observation(client: QueryClient, request: dict[str, Any], query_id: str) -> dict[str, Any]:
-    query = client.get_query_execution(QueryExecutionId=query_id)["QueryExecution"]
+    return inspect_query(
+        client.get_query_execution(QueryExecutionId=query_id)["QueryExecution"], request, query_id
+    )
+
+
+def inspect_query(query: dict[str, Any], request: dict[str, Any], query_id: str) -> dict[str, Any]:
     if query.get("QueryExecutionId") != query_id:
         raise ValueError("Athena observation is for another query ID")
     state = query.get("Status", {}).get("State")
