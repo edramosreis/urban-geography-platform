@@ -227,13 +227,13 @@ def run_owned_views(
     writer_receipt_sha256: str,
     caller_arn: str,
     caller_user_id: str,
-    execute_models: ModelExecutor,
+    execute_models: ModelExecutor | None = None,
     session: Any = None,
     reader_factory: Callable[..., Any] = ReaderProcess,
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Own frozen-credential SDK clients and the isolated reader; executor is still explicit."""
+    """Own frozen clients, isolated reader and the default supervised dbt executor."""
     plan = local_plan(
         project,
         output,
@@ -244,13 +244,21 @@ def run_owned_views(
         caller_arn=caller_arn,
         caller_user_id=caller_user_id,
     )
-    if not callable(execute_models) or not callable(reader_factory):
+    if (execute_models is not None and not callable(execute_models)) or not callable(
+        reader_factory
+    ):
         raise ValueError("Explicit model executor and reader factory are required")
     if reader_factory is ReaderProcess:
         if os.name != "posix" or not Path(WORKER_PYTHON).is_file():
             raise ValueError("Use the existing Linux Docker worker runtime")
         verified_jars()  # No credentials or AWS calls if the local reader runtime is stale.
+    if execute_models is None:
+        from dbt_model_executor import ModelExecutor as ProcessExecutor
+        from dbt_model_worker import tooling_ready
+
+        tooling_ready()
     with query_resources(session=session) as resources:
+        executor = ProcessExecutor(resources.clients) if execute_models is None else execute_models
         reader = reader_factory(
             output / "reader", resources.reader_environment, plan["source_plan"]["target"]
         )
@@ -265,7 +273,7 @@ def run_owned_views(
             caller_arn=caller_arn,
             caller_user_id=caller_user_id,
             snapshot_reader=reader,
-            execute_models=execute_models,
+            execute_models=executor,
             now=now,
             pause=pause,
         )

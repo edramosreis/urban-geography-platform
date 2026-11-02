@@ -89,3 +89,47 @@ def view_build_plan(
         "source_readback_verified": False,
         "execution_authorized": False,
     }
+
+
+def check_manifest(
+    manifest: dict[str, Any], project: Path, binding: dict[str, Any]
+) -> dict[str, int]:
+    prefix = "model.urban_geo_athena."
+    parents = {
+        "stg_building_proximity": ["source.urban_geo_athena.lakehouse.building_proximity"],
+        "grid_proximity": [prefix + "stg_building_proximity"],
+        "release_proximity": [prefix + "grid_proximity"],
+    }
+    nodes = manifest["nodes"]
+    models = {key: node for key, node in nodes.items() if node["resource_type"] == "model"}
+    if set(models) != {prefix + name for name in parents}:
+        raise ValueError("Unexpected dbt model graph")
+    for name, expected in parents.items():
+        node = models[prefix + name]
+        config = node["config"]
+        materialization = "ephemeral" if name.startswith("stg_") else "view"
+        if (
+            node["depends_on"]["nodes"] != expected
+            or config["materialized"] != materialization
+            or config.get("pre-hook")
+            or config.get("post-hook")
+            or node["raw_code"]
+            != (project / "models" / (name + ".sql")).read_text(encoding="utf-8").strip()
+        ):
+            raise ValueError("dbt model configuration differs: " + name)
+    source_id = parents["stg_building_proximity"][0]
+    if set(manifest["sources"]) != {source_id}:
+        raise ValueError("Unexpected dbt sources")
+    source = manifest["sources"][source_id]
+    if (source["database"], source["schema"], source["identifier"]) != (
+        "awsdatacatalog",
+        binding["source_schema"],
+        "building_proximity",
+    ):
+        raise ValueError("dbt source binding differs")
+    tests = [node for node in nodes.values() if node["resource_type"] == "test"]
+    if len(tests) != 7 or len(nodes) != 10:
+        raise ValueError("Expected six source-column tests and one Gold invariant test")
+    if manifest["metadata"]["adapter_type"] != "athena":
+        raise ValueError("Expected the real Athena adapter")
+    return {"models": len(models), "sources": 1, "data_tests_parsed": len(tests)}
