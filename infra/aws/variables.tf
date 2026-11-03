@@ -132,3 +132,19 @@ variable "glue_operator_principal_arn" {
     error_message = "Choose one existing same-account IAM role ARN, including its path; no session ARN, root, wildcard or operator self-trust."
   }
 }
+
+
+variable "athena_reader_principal_arn" {
+  description = "Optional exact same-account IAM role allowed to assume the fact reader; null leaves the policy unattached."
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.athena_reader_principal_arn == null ? true : (
+      length(var.athena_reader_principal_arn) <= 576 &&
+      can(regex("^arn:aws:iam::${var.aws_account_id}:role/([A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}$", var.athena_reader_principal_arn)) &&
+      var.athena_reader_principal_arn != "arn:aws:iam::${var.aws_account_id}:role/${var.deployment_name}-athena-reader"
+    )
+    error_message = "Choose one existing same-account IAM role ARN; no user, root, session ARN, wildcard or reader self-trust."
+  }
+}

@@ -1,4 +1,4 @@
-# Mocked plans only; no AWS requests, policy attachments or queries.
+# Mocked plans only; no live AWS requests, policy attachments or queries.
 mock_provider "aws" {}
 
 variables {
@@ -153,5 +153,131 @@ run "reader_and_builder_are_independent" {
       !contains(local.athena_reader_policy.Statement[2].Resource, local.gold_view_arns[1])
     )
     error_message = "Enabling dbt must not widen the independent fact-reader policy."
+  }
+}
+
+
+run "reader_role_trust_and_policy_attachment" {
+  command = plan
+  variables {
+    enable_athena_reader_policy = true
+    athena_reader_principal_arn = "arn:aws:iam::123456789012:role/managed/project/login"
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_policy.athena_reader[0]
+    values          = { arn = "arn:aws:iam::123456789012:policy/urban-geo-test-athena-reader" }
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_role.athena_reader[0]
+    values          = { arn = "arn:aws:iam::123456789012:role/urban-geo-test-athena-reader" }
+  }
+  assert {
+    condition = (
+      aws_iam_role.athena_reader[0].name == "urban-geo-test-athena-reader" &&
+      aws_iam_role.athena_reader[0].max_session_duration == 3600 &&
+      jsondecode(aws_iam_role.athena_reader[0].assume_role_policy) == {
+        Version = "2012-10-17"
+        Statement = [{
+          Effect    = "Allow"
+          Action    = "sts:AssumeRole"
+          Principal = { AWS = var.athena_reader_principal_arn }
+        }]
+      } &&
+      aws_iam_role_policy_attachment.athena_reader[0].role == aws_iam_role.athena_reader[0].name &&
+      aws_iam_role_policy_attachment.athena_reader[0].policy_arn == aws_iam_policy.athena_reader[0].arn &&
+      output.athena_reader_role_arn == "arn:aws:iam::123456789012:role/urban-geo-test-athena-reader" &&
+      aws_athena_workgroup.analytics.state == "DISABLED" &&
+      length(aws_iam_policy.dbt_view_builder) == 0
+    )
+    error_message = "Trust one role, allow a one-hour maximum, attach only the fact-reader policy and leave query admission disabled."
+  }
+}
+
+run "policy_only_keeps_identity_optional" {
+  command = plan
+  variables { enable_athena_reader_policy = true }
+  assert {
+    condition = (
+      length(aws_iam_role.athena_reader) == 0 && length(aws_iam_role_policy_attachment.athena_reader) == 0 &&
+      output.athena_reader_role_arn == null
+    )
+    error_message = "The existing policy-only preparation must not gain a role or attachment."
+  }
+}
+
+run "reader_role_requires_reader_policy" {
+  command = plan
+  variables { athena_reader_principal_arn = "arn:aws:iam::123456789012:role/login" }
+  expect_failures = [aws_iam_role.athena_reader[0]]
+}
+
+run "reader_rejects_cross_account_trust" {
+  command = plan
+  variables {
+    enable_athena_reader_policy = true
+    athena_reader_principal_arn = "arn:aws:iam::999999999999:role/login"
+  }
+  expect_failures = [var.athena_reader_principal_arn]
+}
+
+run "reader_rejects_session_trust" {
+  command = plan
+  variables {
+    enable_athena_reader_policy = true
+    athena_reader_principal_arn = "arn:aws:sts::123456789012:assumed-role/login/session"
+  }
+  expect_failures = [var.athena_reader_principal_arn]
+}
+
+run "reader_rejects_wildcard_trust" {
+  command = plan
+  variables {
+    enable_athena_reader_policy = true
+    athena_reader_principal_arn = "arn:aws:iam::123456789012:role/*"
+  }
+  expect_failures = [var.athena_reader_principal_arn]
+}
+
+run "reader_rejects_root_trust" {
+  command = plan
+  variables {
+    enable_athena_reader_policy = true
+    athena_reader_principal_arn = "arn:aws:iam::123456789012:root"
+  }
+  expect_failures = [var.athena_reader_principal_arn]
+}
+
+run "reader_rejects_self_trust" {
+  command = plan
+  variables {
+    enable_athena_reader_policy = true
+    athena_reader_principal_arn = "arn:aws:iam::123456789012:role/urban-geo-test-athena-reader"
+  }
+  expect_failures = [var.athena_reader_principal_arn]
+}
+
+run "reader_attachment_stays_separate_from_view_builder" {
+  command = plan
+  variables {
+    enable_athena_reader_policy    = true
+    enable_dbt_view_builder_policy = true
+    athena_reader_principal_arn    = "arn:aws:iam::123456789012:role/login"
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_policy.athena_reader[0]
+    values          = { arn = "arn:aws:iam::123456789012:policy/urban-geo-test-athena-reader" }
+  }
+  assert {
+    condition = (
+      length(aws_iam_role_policy_attachment.athena_reader) == 1 &&
+      aws_iam_role_policy_attachment.athena_reader[0].policy_arn == aws_iam_policy.athena_reader[0].arn &&
+      length(aws_iam_policy.dbt_view_builder) == 1 &&
+      jsondecode(aws_iam_policy.athena_reader[0].policy).Statement == jsondecode(jsonencode(local.athena_reader_policy.Statement)) &&
+      aws_athena_workgroup.analytics.state == "DISABLED"
+    )
+    error_message = "Preparing dbt's separate policy must not attach its view permissions to the reader."
   }
 }

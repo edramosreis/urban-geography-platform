@@ -50,7 +50,7 @@ output "glue_job_scratch_uri" {
 
 
 output "athena_reader_policy_arn" {
-  description = "Unattached policy; runner identity, attachment and queries need separate approval."
+  description = "Fact-reader policy; optional role attachment and queries require separate approved deployment."
   value       = try(aws_iam_policy.athena_reader[0].arn, null)
 }
 
@@ -64,4 +64,10 @@ output "dbt_view_builder_policy_arn" {
 output "glue_operator_role_arn" {
   description = "Optional scoped controller role; creation and assuming it require separately approved AWS changes."
   value       = try(aws_iam_role.glue_operator[0].arn, null)
+}
+
+
+output "athena_reader_role_arn" {
+  description = "Optional fact-reader role; creation/assumption and actual query execution need separate approval."
+  value       = try(aws_iam_role.athena_reader[0].arn, null)
 }

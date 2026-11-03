@@ -108,12 +108,12 @@ locals {
   }
 }
 
-# No role, user or attachment: choosing a runner identity is a separate approved step.
+# Remains unattached unless the optional, explicitly trusted reader role is requested.
 resource "aws_iam_policy" "athena_reader" {
   count = var.enable_athena_reader_policy ? 1 : 0
 
   name        = "${var.deployment_name}-athena-reader"
-  description = "One workgroup, read-only pilot facts, dedicated query result writes; unattached."
+  description = "One workgroup, preserved pilot facts and dedicated query result writes."
   policy      = jsonencode(local.athena_reader_policy)
 
   lifecycle {
@@ -138,4 +138,35 @@ resource "aws_iam_policy" "dbt_view_builder" {
       error_message = "The dbt view builder policy exceeds the managed IAM policy size limit."
     }
   }
+}
+
+
+# This role is for fact verification/querying; the dbt builder remains separate.
+resource "aws_iam_role" "athena_reader" {
+  count = var.athena_reader_principal_arn == null ? 0 : 1
+
+  name                 = "${var.deployment_name}-athena-reader"
+  max_session_duration = 3600
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { AWS = var.athena_reader_principal_arn }
+    }]
+  })
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_athena_reader_policy
+      error_message = "The reader role requires its explicitly enabled fact-reader policy."
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "athena_reader" {
+  count = var.athena_reader_principal_arn != null && var.enable_athena_reader_policy ? 1 : 0
+
+  role       = aws_iam_role.athena_reader[0].name
+  policy_arn = aws_iam_policy.athena_reader[0].arn
 }
