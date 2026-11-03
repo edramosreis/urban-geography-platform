@@ -12,6 +12,22 @@ from urban_geography.glue_input import MAX_SUMMARY_BYTES, PROJECT_ROOT
 from urban_geography.glue_release import load_release
 
 
+def validate_operator_principal(value: str, owner: str, deployment: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) > 576
+        or not re.fullmatch(
+            r"arn:aws:iam::" + owner + r":role/(?:[A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}",
+            value,
+        )
+        or value == f"arn:aws:iam::{owner}:role/{deployment}-glue-operator"
+    ):
+        raise ValueError(
+            "Use one existing same-account IAM role ARN, excluding operator self-trust"
+        )
+    return value
+
+
 def prepare(
     release: Path,
     pin: str,
@@ -50,22 +66,9 @@ def prepare(
             raise ValueError("Release manifest changed before job export")
         result["glue_job_release_json"] = content.decode("utf-8")
     if operator_principal_arn is not None:
-        if (
-            not isinstance(operator_principal_arn, str)
-            or len(operator_principal_arn) > 576
-            or not re.fullmatch(
-                r"arn:aws:iam::"
-                + target["account_id"]
-                + r":role/(?:[A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}",
-                operator_principal_arn,
-            )
-            or operator_principal_arn
-            == f"arn:aws:iam::{target['account_id']}:role/{target['deployment_name']}-glue-operator"
-        ):
-            raise ValueError(
-                "Use one existing same-account IAM role ARN, excluding operator self-trust"
-            )
-        result["glue_operator_principal_arn"] = operator_principal_arn
+        result["glue_operator_principal_arn"] = validate_operator_principal(
+            operator_principal_arn, target["account_id"], target["deployment_name"]
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(result, indent=2) + "\n")
