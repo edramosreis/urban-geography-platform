@@ -10,7 +10,13 @@ from unittest.mock import Mock
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-for name in ("aws_login_bridge", "glue_control", "prepare_glue_iam", "glue_operator_session"):
+for name in (
+    "aws_login_bridge",
+    "aws_role_session",
+    "glue_control",
+    "prepare_glue_iam",
+    "glue_operator_session",
+):
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
         module = importlib.util.module_from_spec(spec)
@@ -18,6 +24,7 @@ for name in ("aws_login_bridge", "glue_control", "prepare_glue_iam", "glue_opera
         spec.loader.exec_module(module)
 session = sys.modules["glue_operator_session"]
 bridge = sys.modules["aws_login_bridge"]
+roles = sys.modules["aws_role_session"]
 OWNER = "123456789012"
 PRINCIPAL = f"arn:aws:iam::{OWNER}:role/managed/project/login"
 NAME = "glue-pilot-" + "a" * 32
@@ -80,14 +87,14 @@ def case(frozen, monkeypatch):
     ]
     credentials = []
     parsed = []
-    original_parse = session.temporary
+    original_parse = roles.temporary
 
     def parse(value, now=None):
         result = original_parse(value, now)
         parsed.append(result)
         return result
 
-    monkeypatch.setattr(session, "temporary", parse)
+    monkeypatch.setattr(roles, "temporary", parse)
 
     def create(value):
         credentials.append(value)
@@ -132,7 +139,7 @@ def test_plan_is_release_bound_and_opens_no_clients(case):
 
 def test_bad_release_is_rejected_without_credential_or_sdk_work(case, monkeypatch):
     parse = Mock(side_effect=AssertionError("must not receive credentials"))
-    monkeypatch.setattr(session, "receive", parse)
+    monkeypatch.setattr(roles, "receive", parse)
     with pytest.raises(ValueError):
         with session.operator_credentials(case.frozen.path, "0" * 64, PRINCIPAL, b"unused"):
             pytest.fail("must not yield")
@@ -329,7 +336,7 @@ def test_acquisition_failures_are_safe_and_cleanup_owned_clients(case, stage, ca
     with pytest.raises(bridge.BridgeError) as caught:
         with acquire(case):
             pytest.fail("must not yield")
-    assert str(caught.value) == "operator_session_acquisition_failed"
+    assert str(caught.value) == "role_session_acquisition_failed"
     assert not any(value in str(caught.value) for value in (KEY, SECRET, TOKEN))
     assert all(value.token == "" for value in case.credentials)
     assert all(value.token == "" for value in case.parsed)
@@ -383,15 +390,15 @@ def test_returned_lifetime_window_has_exact_bounds(case, monkeypatch, remaining,
             return cls(2026, 11, 3, tzinfo=UTC)
 
     now = Clock.now(UTC)
-    monkeypatch.setattr(session, "datetime", Clock)
+    monkeypatch.setattr(roles, "datetime", Clock)
     case.raw["Expiration"] = now + timedelta(seconds=remaining)
     plan = session.operator_plan(case.frozen.path, case.frozen.pin, PRINCIPAL)
     if accepted:
-        credentials, _ = session.parse_assumed_credentials(case.response, plan, NAME)
+        credentials, _ = roles.parse_assumed_credentials(case.response, plan, NAME)
         credentials.clear()
     else:
         with pytest.raises(bridge.BridgeError):
-            session.parse_assumed_credentials(case.response, plan, NAME)
+            roles.parse_assumed_credentials(case.response, plan, NAME)
 
 
 @pytest.mark.parametrize("service", ["s3", "glue", "athena"])

@@ -3,9 +3,10 @@
 import argparse
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any
+
+from aws_role_session import validate_role_principal as validate_role_principal
 
 from urban_geography.glue_delivery import delivery_plan
 from urban_geography.glue_input import MAX_SUMMARY_BYTES, PROJECT_ROOT
@@ -16,22 +17,6 @@ def validate_operator_principal(value: str, owner: str, deployment: str) -> str:
     return validate_role_principal(
         value, owner, f"arn:aws:iam::{owner}:role/{deployment}-glue-operator"
     )
-
-
-def validate_role_principal(value: str, owner: str, target_role_arn: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) > 576
-        or not re.fullmatch(
-            r"arn:aws:iam::" + owner + r":role/(?:[A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}",
-            value,
-        )
-        or value == target_role_arn
-    ):
-        raise ValueError(
-            "Use one existing same-account IAM role ARN, excluding target-role self-trust"
-        )
-    return value
 
 
 def prepare(

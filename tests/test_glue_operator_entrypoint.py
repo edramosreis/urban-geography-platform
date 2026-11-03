@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 for name in (
     "aws_login_bridge",
+    "aws_role_session",
     "glue_control",
     "aws_login_probe",
     "prepare_glue_iam",

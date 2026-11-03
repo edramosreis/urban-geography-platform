@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-for name in ("prepare_glue_iam", "prepare_athena_reader_role"):
+for name in (
+    "aws_login_bridge",
+    "aws_role_session",
+    "prepare_glue_iam",
+    "prepare_athena_reader_role",
+):
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
         module = importlib.util.module_from_spec(spec)

@@ -1,13 +1,23 @@
 """Private Terraform inputs are derived from pinned releases without AWS or Spark."""
 
+import importlib.util
 import json
 import runpy
+import sys
 from pathlib import Path
 
 import pytest
 
 from urban_geography.glue_delivery import delivery_plan
 
+for name in ("aws_login_bridge", "aws_role_session"):
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parents[1] / "scripts" / (name + ".py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/prepare_glue_iam.py"
 PREPARE = runpy.run_path(str(SCRIPT))["prepare"]
 

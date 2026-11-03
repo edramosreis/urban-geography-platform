@@ -1,30 +1,22 @@
 """Acquire one explicitly scoped operator snapshot; never print or persist its keys."""
 
-import re
 import uuid
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from contextlib import contextmanager
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-from aws_login_bridge import REGION, BridgeError, TemporaryCredentials, receive, temporary
+import aws_role_session as roles
+from aws_login_bridge import REGION, BridgeError, TemporaryCredentials
+from aws_role_session import SESSION_SECONDS, STSClient
+from aws_role_session import SOURCE_REQUIRED_SECONDS as SOURCE_REQUIRED_SECONDS
 from glue_control import credential_admission
 from prepare_glue_iam import validate_operator_principal
 
 from urban_geography.glue_release import load_release
 from urban_geography.glue_sdk import SDK_PINS
-
-SESSION_SECONDS = 3600
-SOURCE_REQUIRED_SECONDS = 120
-
-
-class STSClient(Protocol):
-    def get_caller_identity(self, **kwargs: Any) -> dict[str, Any]: ...
-    def assume_role(self, **kwargs: Any) -> dict[str, Any]: ...
-    def close(self) -> None: ...
 
 
 def operator_plan(release: Path, pin: str, principal_arn: str) -> dict[str, Any]:
@@ -90,117 +82,18 @@ def _create_control_client(credentials: TemporaryCredentials, service: str) -> A
     )
 
 
-def verify_source_identity(identity: dict[str, Any], plan: dict[str, Any]) -> None:
-    name = re.escape(plan["source_role_arn"].rsplit("/", 1)[1])
-    if (
-        identity.get("Account") != plan["owner"]
-        or not isinstance(identity.get("Arn"), str)
-        or not re.fullmatch(
-            r"arn:aws:sts::"
-            + plan["owner"]
-            + r":assumed-role/"
-            + name
-            + r"/[A-Za-z0-9+=,.@_-]{2,64}",
-            identity["Arn"],
-        )
-    ):
-        raise BridgeError("operator_source_identity_differs")
-
-
-def parse_assumed_credentials(
-    response: dict[str, Any], plan: dict[str, Any], session_name: str
-) -> tuple[TemporaryCredentials, dict[str, str]]:
-    """Check the SDK response before using it to construct a second STS client."""
-    user = response.get("AssumedRoleUser")
-    expected = f"arn:aws:sts::{plan['owner']}:assumed-role/{plan['role_name']}/{session_name}"
-    if (
-        not isinstance(user, dict)
-        or user.get("Arn") != expected
-        or not isinstance(user.get("AssumedRoleId"), str)
-        or not re.fullmatch(r"[A-Za-z0-9]{1,128}:" + session_name, user["AssumedRoleId"])
-    ):
-        raise BridgeError("operator_assumed_identity_differs")
-    record = response.get("Credentials")
-    if not isinstance(record, dict):
-        raise BridgeError("operator_credentials_missing")
-    required = {"AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration"}
-    if not required <= record.keys() or not record.keys() <= required | {"AccountId"}:
-        raise BridgeError("operator_credential_fields_invalid")
-    expires = record.get("Expiration")
-    if not isinstance(expires, datetime):
-        raise BridgeError("operator_expiration_invalid")
-    offset = expires.utcoffset()
-    if offset is None or offset.total_seconds() != 0:
-        raise BridgeError("operator_expiration_invalid")
-    now = datetime.now(UTC)
-    if (expires - now).total_seconds() > SESSION_SECONDS:
-        raise BridgeError("operator_expiration_exceeds_requested_duration")
-    # Preserve any provider AccountId so the ordinary envelope check cannot mask a mismatch.
-    value = {**record, "Version": 1, "Expiration": expires.isoformat()}
-    result = temporary(value, now)
-    try:
-        if result.owner is not None and result.owner != plan["owner"]:
-            raise BridgeError("credential_account_differs")
-        result.require_operation(plan["required_lifetime_seconds"], now)
-        result.owner = plan["owner"]
-        return result, {"Account": plan["owner"], "Arn": expected, "UserId": user["AssumedRoleId"]}
-    except BaseException:
-        result.clear()
-        raise
-
-
 @contextmanager
 def operator_credentials(
     release: Path, pin: str, principal_arn: str, content: bytes
 ) -> Iterator[TemporaryCredentials]:
-    """Close both STS clients before yielding; clear owned credentials on every exit.
-
-    This does not launch a job, refresh a snapshot, or export credentials to stdout.
-    Exceptions from the consuming controller retain their original type and meaning.
-    """
+    """Verify the release before acquiring one owned session for the Glue controller."""
     plan = operator_plan(release, pin, principal_arn)
-    source, owner = receive(content)
+    acquisition = roles.scoped_credentials(
+        plan,
+        content,
+        create_sts_client=create_sts_client,
+        session_name="glue-pilot-" + uuid.uuid4().hex,
+    )
     content = b""
-    assumed = None
-    response: dict[str, Any] = {}
-    try:
-        try:
-            if owner != plan["owner"]:
-                raise BridgeError("credential_account_differs")
-            source.require_operation(SOURCE_REQUIRED_SECONDS)
-            session_name = "glue-pilot-" + uuid.uuid4().hex
-            with closing(create_sts_client(source)) as client:
-                verify_source_identity(client.get_caller_identity(), plan)
-                source.require_operation(SOURCE_REQUIRED_SECONDS)
-                try:
-                    response = client.assume_role(
-                        RoleArn=plan["role_arn"],
-                        RoleSessionName=session_name,
-                        DurationSeconds=SESSION_SECONDS,
-                    )
-                    assumed, expected_identity = parse_assumed_credentials(
-                        response, plan, session_name
-                    )
-                finally:
-                    if isinstance(response, dict):
-                        raw = response.pop("Credentials", None)
-                        if isinstance(raw, dict):
-                            raw.clear()
-                        response.clear()
-            source.clear()
-            del client
-            with closing(create_sts_client(assumed)) as client:
-                identity = client.get_caller_identity()
-                if any(identity.get(key) != value for key, value in expected_identity.items()):
-                    raise BridgeError("operator_verified_identity_differs")
-                assumed.require_operation(plan["required_lifetime_seconds"])
-            del client
-        except BridgeError:
-            raise
-        except Exception:
-            raise BridgeError("operator_session_acquisition_failed") from None
-        yield assumed
-    finally:
-        source.clear()
-        if assumed is not None:
-            assumed.clear()
+    with acquisition as credentials:
+        yield credentials
