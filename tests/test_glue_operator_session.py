@@ -392,3 +392,16 @@ def test_returned_lifetime_window_has_exact_bounds(case, monkeypatch, remaining,
     else:
         with pytest.raises(bridge.BridgeError):
             session.parse_assumed_credentials(case.response, plan, NAME)
+
+
+@pytest.mark.parametrize("service", ["s3", "glue", "athena"])
+def test_shared_factory_cannot_open_another_service(monkeypatch, service):
+    credentials, _ = bridge.receive(packet())
+    imported = Mock(side_effect=AssertionError("must not import SDK"))
+    monkeypatch.setattr(session, "import_module", imported)
+    try:
+        with pytest.raises(bridge.BridgeError, match="unsupported_operator_service"):
+            session._create_control_client(credentials, service)
+    finally:
+        credentials.clear()
+    imported.assert_not_called()

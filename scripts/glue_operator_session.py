@@ -46,7 +46,17 @@ def operator_plan(release: Path, pin: str, principal_arn: str) -> dict[str, Any]
 
 
 def create_sts_client(credentials: TemporaryCredentials) -> STSClient:
-    """Only explicit keys, the pinned SDK, regional HTTPS and one total request attempt."""
+    return _create_control_client(credentials, "sts")
+
+
+def create_logs_client(credentials: TemporaryCredentials) -> Any:
+    return _create_control_client(credentials, "logs")
+
+
+def _create_control_client(credentials: TemporaryCredentials, service: str) -> Any:
+    """Share the explicit snapshot/TLS/timeout policy for the two controller services."""
+    if service not in {"sts", "logs"}:
+        raise BridgeError("unsupported_operator_service")
     credentials.require_lifetime()
     if not all(credentials.session_options().values()):
         raise BridgeError("empty_temporary_credentials")
@@ -71,11 +81,11 @@ def create_sts_client(credentials: TemporaryCredentials) -> STSClient:
     )
     session = boto3.Session(region_name=REGION, **credentials.session_options())
     return session.client(
-        "sts",
+        service,
         region_name=REGION,
         use_ssl=True,
         verify=True,
-        endpoint_url=f"https://sts.{REGION}.amazonaws.com",
+        endpoint_url=f"https://{service}.{REGION}.amazonaws.com",
         config=config,
     )
 
