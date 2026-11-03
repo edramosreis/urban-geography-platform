@@ -994,3 +994,33 @@ keeps the two-model behavior unchanged. No real AWS query, Spark job or live
 cross-engine/result acceptance occurs. The conservative view-catalog format
 profile and live permission/service checks remain unvalidated. An approved AWS
 trial, measured costs and verified teardown remain separate work.
+
+
+### Local CLI login handoff
+
+scripts/aws_login_bridge.py passes one temporary credential snapshot from the
+host AWS CLI to scripts/aws_login_probe.py over Docker stdin. Its default mode
+only describes the proposed check. With --execute, the fixed receiver verifies
+one STS caller identity against an explicit account ID using either the provided
+Glue SDK or the isolated analytics SDK. It admits assumed-role identities only;
+it does not run the pipeline or verify the role's service permissions.
+
+The host requires a named browser-login profile and clears ambient AWS overrides
+for CLI resolution. It pins a local Docker socket context and the inspected
+image ID, mounts only code and the selected existing SDK directory read-only,
+and starts one read-only container with two CPUs and 4 GiB. Credential payloads
+travel through stdin, rather than container settings or command arguments.
+Provider stderr is discarded, stdout is bounded, and normal output contains
+only verification flags and the expiration time. Owned-container cleanup runs
+on success and failure and reports an unconfirmed cleanup separately.
+
+Both sides reject missing session tokens, long-lived keys, malformed records,
+and credentials with less than 60 seconds or more than 12 hours remaining. The
+bridge does not propagate the CLI's automatic refresh into Docker; this first
+increment is a short identity check, not a long-running credential provider.
+A later pipeline adapter must enforce its own required session lifetime.
+The receiver's --offline option uses real SDK clients with a synthetic STS
+response and always labels its reply as simulated. It is not live identity proof.
+
+AWS documents [CLI credential export](https://docs.aws.amazon.com/cli/latest/reference/configure/export-credentials.html)
+and the [process credential format](https://docs.aws.amazon.com/sdkref/latest/guide/feature-process-credentials.html).
