@@ -63,6 +63,8 @@ def main() -> None:
         return
     if args.output is None or not args.credentials_stdin:
         parser.error("--execute requires fresh --output and --credentials-stdin")
+    if sys.stdin.isatty():
+        parser.error("--credentials-stdin requires a private input pipe")
     trial_output(args.output, args.release)
     result = run_with_credentials(
         plan, args.release, args.output, sys.stdin.buffer.read(MAX_BYTES + 1)

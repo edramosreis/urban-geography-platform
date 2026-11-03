@@ -1029,7 +1029,7 @@ and the [process credential format](https://docs.aws.amazon.com/sdkref/latest/gu
 ### Glue operator credential admission
 
 The Glue operator entrypoint requires --credentials-stdin alongside --execute.
-It accepts the same explicit temporary-credential envelope as the login bridge;
+It rejects interactive input and accepts the explicit credential envelope on a private pipe;
 there is no ambient credential fallback for execution. Plan-only mode does not
 read stdin and reports its credential_admission policy.
 

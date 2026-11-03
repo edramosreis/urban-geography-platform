@@ -40,7 +40,15 @@ def test_journal_refuses_unsafe_or_frozen_locations(tmp_path, monkeypatch, kind)
 
 
 @pytest.mark.parametrize(
-    "mode", ["success", "failed_run", "controller_error", "existing_output", "missing_stdin"]
+    "mode",
+    [
+        "success",
+        "failed_run",
+        "controller_error",
+        "existing_output",
+        "missing_stdin",
+        "interactive",
+    ],
 )
 def test_cli_requires_explicit_credentials_and_delegates_one_attempt(
     frozen, tmp_path, monkeypatch, capsys, mode
@@ -57,7 +65,9 @@ def test_cli_requires_explicit_credentials_and_delegates_one_attempt(
     monkeypatch.setitem(main.__globals__, "run_with_credentials", run)
     stream = Mock()
     stream.read.return_value = b"explicit dummy handoff"
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=stream))
+    monkeypatch.setattr(
+        sys, "stdin", SimpleNamespace(buffer=stream, isatty=lambda: mode == "interactive")
+    )
     command = [
         "run_glue_pilot.py",
         "--release",
@@ -74,14 +84,14 @@ def test_cli_requires_explicit_credentials_and_delegates_one_attempt(
     if mode == "success":
         main()
         assert json.loads(capsys.readouterr().out)["outcome"] == "job_succeeded"
-    elif mode in {"failed_run", "missing_stdin"}:
+    elif mode in {"failed_run", "missing_stdin", "interactive"}:
         with pytest.raises(SystemExit) as error:
             main()
         assert error.value.code == 2
     else:
         with pytest.raises((RuntimeError, ValueError)):
             main()
-    if mode in {"existing_output", "missing_stdin"}:
+    if mode in {"existing_output", "missing_stdin", "interactive"}:
         stream.read.assert_not_called()
         run.assert_not_called()
     else:
