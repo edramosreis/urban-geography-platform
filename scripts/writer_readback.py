@@ -47,6 +47,13 @@ def load_claim(
     if len(content) > MAX_WRITER_RECEIPT_BYTES or hashlib.sha256(content).hexdigest() != pin:
         raise ValueError("Writer receipt size or SHA256 differs")
     claim = json.loads(content)
+    return validate_claim(claim, prepared, table, settings)
+
+
+def validate_claim(
+    claim: Any, prepared: InputPlan, table: str, settings: dict[str, str]
+) -> dict[str, Any]:
+    """Validate the existing publication schema without writing it or opening Spark."""
     expected = {
         "table": table,
         "format_version": 2,
