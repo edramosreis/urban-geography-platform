@@ -11,7 +11,10 @@ from typing import Any
 import aws_login_bridge as bridge
 from glue_control import load_plan, same, trial_output
 from glue_operator_session import SOURCE_REQUIRED_SECONDS, operator_plan
+from glue_writer_receipt import load_capture
 from run_glue_operator import OUTCOMES
+
+from urban_geography.ingest import digest
 
 SUPERVISOR_SECONDS = 1800
 REPLY_BYTES = 4096
@@ -80,11 +83,22 @@ def docker_command(
 def verify_reply(content: bytes, pin: str) -> dict[str, Any]:
     value = bridge.decode(content, REPLY_BYTES)
     if (
-        set(value) != {"version", "release_sha256", "status", "outcome", "terminal_confirmed"}
+        set(value)
+        != {
+            "version",
+            "release_sha256",
+            "status",
+            "outcome",
+            "terminal_confirmed",
+            "writer_receipt_captured",
+            "writer_receipt_sha256",
+            "capture_receipt_sha256",
+        }
         or type(value["version"]) is not int
-        or value["version"] != 1
+        or value["version"] != 2
         or value["release_sha256"] != pin
         or type(value["terminal_confirmed"]) is not bool
+        or type(value["writer_receipt_captured"]) is not bool
     ):
         raise bridge.BridgeError("unexpected_operation_reply")
     if value["status"] == "operation_failed":
@@ -99,7 +113,30 @@ def verify_reply(content: bytes, pin: str) -> dict[str, Any]:
             raise bridge.BridgeError("unexpected_operation_reply")
     else:
         raise bridge.BridgeError("unexpected_operation_reply")
+    if value["writer_receipt_captured"]:
+        if value["status"] != "controller_completed" or value["outcome"] != "job_succeeded":
+            raise bridge.BridgeError("writer_receipt_without_successful_controller")
+        if any(
+            not isinstance(value[key], str) or not re.fullmatch(r"[0-9a-f]{64}", value[key])
+            for key in ("writer_receipt_sha256", "capture_receipt_sha256")
+        ):
+            raise bridge.BridgeError("invalid_writer_receipt_pins")
+    elif value["writer_receipt_sha256"] is not None or value["capture_receipt_sha256"] is not None:
+        raise bridge.BridgeError("writer_pins_without_capture")
     return value
+
+
+def verify_writer_receipt(output: Path, release: Path, pin: str, reply: dict[str, Any]) -> None:
+    controller = output / "attempt/receipt.json"
+    load_capture(
+        release,
+        pin,
+        controller,
+        digest(controller),
+        output / "attempt-writer-capture",
+        reply["capture_receipt_sha256"],
+        reply["writer_receipt_sha256"],
+    )
 
 
 def verify_receipt(output: Path, plan: dict[str, Any], reply: dict[str, Any]) -> None:
@@ -185,11 +222,16 @@ def launch(
         reply = verify_reply(content, pin)
         if reply["status"] == "controller_completed":
             verify_receipt(output, plan, reply)
+        if reply["writer_receipt_captured"]:
+            verify_writer_receipt(output, release, pin, reply)
         return {
             "status": reply["status"],
             "outcome": reply["outcome"],
             "terminal_confirmed": reply["terminal_confirmed"],
             "controller_receipt_verified": reply["status"] == "controller_completed",
+            "writer_receipt_verified": reply["writer_receipt_captured"],
+            "writer_receipt_sha256": reply["writer_receipt_sha256"],
+            "capture_receipt_sha256": reply["capture_receipt_sha256"],
             "output_readback_verified": False,
         }
     except Exception:
@@ -252,7 +294,11 @@ def main() -> None:
         ):
             result.update(status="owned_container_cleanup_unconfirmed", container=exc.args[1])
     print(json.dumps(result))
-    if result.get("outcome") != "job_succeeded" or result["status"] != "controller_completed":
+    if (
+        result.get("outcome") != "job_succeeded"
+        or result["status"] != "controller_completed"
+        or result.get("writer_receipt_verified") is not True
+    ):
         raise SystemExit(2)
 
 

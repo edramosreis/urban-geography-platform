@@ -18,6 +18,9 @@ for name in (
     "prepare_glue_iam",
     "glue_operator_session",
     "run_glue_pilot",
+    "prepare_dbt_project",
+    "writer_readback",
+    "glue_writer_receipt",
     "run_glue_operator",
     "glue_host_launcher",
 ):
@@ -114,13 +117,16 @@ def launch(case):
     )
 
 
-def test_success_uses_private_pipe_and_binds_receipt_before_claiming_success(case):
+def test_controller_success_without_writer_capture_is_reported_separately(case):
     result = launch(case)
     assert result == {
         "status": "controller_completed",
         "outcome": "job_succeeded",
         "terminal_confirmed": True,
         "controller_receipt_verified": True,
+        "writer_receipt_verified": False,
+        "writer_receipt_sha256": None,
+        "capture_receipt_sha256": None,
         "output_readback_verified": False,
     }
     call = next(item for item in case.capture.call_args_list if "run" in item.args[0])
@@ -324,14 +330,17 @@ def test_host_default_cli_plans_without_tools_or_credentials(case, monkeypatch, 
     assert not case.output.exists()
 
 
-@pytest.mark.parametrize("mode", ["success", "job_failed", "error", "cleanup_error"])
+@pytest.mark.parametrize(
+    "mode", ["success", "job_failed", "capture_incomplete", "error", "cleanup_error"]
+)
 def test_host_cli_owns_exit_status_and_never_echoes_provider_details(
     case, monkeypatch, capsys, mode
 ):
     result = {
         "status": "controller_completed",
-        "outcome": "job_succeeded" if mode == "success" else "job_failed",
+        "outcome": "job_succeeded" if mode in {"success", "capture_incomplete"} else "job_failed",
         "terminal_confirmed": True,
+        "writer_receipt_verified": mode == "success",
     }
     run = Mock(return_value=result)
     if mode == "error":
@@ -376,8 +385,65 @@ def test_host_cli_owns_exit_status_and_never_echoes_provider_details(
         == {
             "success": "controller_completed",
             "job_failed": "controller_completed",
+            "capture_incomplete": "controller_completed",
             "error": "handoff_failed",
             "cleanup_error": "owned_container_cleanup_unconfirmed",
         }[mode]
     )
     run.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "defect", ["legacy", "numeric_flag", "missing_pins", "pins_without_capture", "failed_job"]
+)
+def test_host_refuses_unsupported_or_inconsistent_writer_capture_replies(case, defect):
+    value = case.reply
+    if defect == "legacy":
+        value["version"] = 1
+    elif defect == "numeric_flag":
+        value["writer_receipt_captured"] = 1
+    elif defect == "missing_pins":
+        value["writer_receipt_captured"] = True
+    elif defect == "pins_without_capture":
+        value["writer_receipt_sha256"] = "a" * 64
+    else:
+        value.update(
+            outcome="job_failed",
+            writer_receipt_captured=True,
+            writer_receipt_sha256="a" * 64,
+            capture_receipt_sha256="b" * 64,
+        )
+    with pytest.raises(bridge.BridgeError):
+        host.verify_reply(json.dumps(value).encode(), case.frozen.pin)
+
+
+def test_host_checks_saved_writer_proof_before_accepting_capture_flag(case, monkeypatch):
+    case.reply.update(
+        writer_receipt_captured=True,
+        writer_receipt_sha256="a" * 64,
+        capture_receipt_sha256="b" * 64,
+    )
+    verify = Mock(side_effect=ValueError("wrong saved capture"))
+    monkeypatch.setattr(host, "verify_writer_receipt", verify)
+    with pytest.raises(bridge.BridgeError, match="reconcile_before_retry"):
+        launch(case)
+    verify.assert_called_once()
+    case.cleanup.assert_called_once()
+    assert case.source.token == "" and (case.output / "attempt/receipt.json").exists()
+
+
+def test_host_accepts_capture_only_after_saved_proof_verification(case, monkeypatch):
+    case.reply.update(
+        writer_receipt_captured=True,
+        writer_receipt_sha256="a" * 64,
+        capture_receipt_sha256="b" * 64,
+    )
+    verify = Mock()
+    monkeypatch.setattr(host, "verify_writer_receipt", verify)
+    result = launch(case)
+    verify.assert_called_once_with(case.output, case.frozen.path, case.frozen.pin, case.reply)
+    assert result["controller_receipt_verified"] and result["writer_receipt_verified"]
+    assert (
+        result["writer_receipt_sha256"] == "a" * 64 and result["capture_receipt_sha256"] == "b" * 64
+    )
+    assert result["output_readback_verified"] is False

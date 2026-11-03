@@ -262,3 +262,83 @@ def capture_writer_receipt(
     with (output / "capture.json").open("x", encoding="utf-8") as destination:
         json.dump(result, destination, indent=2, allow_nan=False)
     return result
+
+
+def load_capture(
+    release: Path,
+    pin: str,
+    controller: Path,
+    controller_pin: str,
+    directory: Path,
+    proof_pin: str,
+    writer_pin: str,
+) -> dict[str, Any]:
+    """Verify the saved capture and publication before a separate process accepts them."""
+    expected_binding = receipt_plan(release, pin, controller, controller_pin)
+    if directory.is_symlink():
+        raise CaptureError("capture_directory_is_symlink")
+
+    def pinned(name: str, expected_pin: str) -> dict[str, Any]:
+        path = directory / name
+        if (
+            not isinstance(expected_pin, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_pin)
+            or path.is_symlink()
+        ):
+            raise CaptureError("invalid_capture_file_or_pin")
+        with path.open("rb") as source:
+            content = source.read(MAX_WRITER_RECEIPT_BYTES + 1)
+        if hashlib.sha256(content).hexdigest() != expected_pin:
+            raise CaptureError("capture_file_checksum_differs")
+        return decode(content, MAX_WRITER_RECEIPT_BYTES)
+
+    proof, claim = pinned("capture.json", proof_pin), pinned("writer.json", writer_pin)
+    manifest = load_release(release, pin)
+    prepared = load_prepared_input(release / "input", manifest["identity"]["summary_sha256"])
+    recipe = runtime_plan(**expected_binding["target"])
+    validate_claim(
+        claim,
+        prepared,
+        recipe["catalog"] + "." + recipe["database"] + ".building_proximity",
+        recipe["spark_settings"],
+    )
+    expected = {
+        "status": "writer_claim_captured",
+        "binding": expected_binding,
+        "writer_receipt_sha256": writer_pin,
+        "snapshot_id": claim["snapshot_id"],
+        "source_run_sha256": claim["source_run_sha256"],
+        "row_readback_performed": False,
+    }
+    if set(proof) != set(expected) | {"log_event", "statistics"} or any(
+        not same(proof.get(key), value) for key, value in expected.items()
+    ):
+        raise CaptureError("capture_proof_binding_differs")
+    event = proof["log_event"]
+    if (
+        not isinstance(event, dict)
+        or set(event) != {"stream", "event_id", "timestamp", "ingestion_time", "message_sha256"}
+        or not isinstance(event["stream"], str)
+        or not re.fullmatch(
+            re.escape(expected_binding["run_id"]) + r"(?:-[A-Za-z0-9_-]{1,128})?", event["stream"]
+        )
+        or not isinstance(event["event_id"], str)
+        or not 0 < len(event["event_id"]) <= 1024
+        or not isinstance(event["message_sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", event["message_sha256"])
+        or any(
+            type(event[key]) is not int or event[key] < 0 for key in ("timestamp", "ingestion_time")
+        )
+    ):
+        raise CaptureError("capture_log_event_differs")
+    stats = proof["statistics"]
+    if (
+        not isinstance(stats, dict)
+        or set(stats) != {"pages", "events", "message_bytes"}
+        or any(type(value) is not int for value in stats.values())
+        or not 1 <= stats["pages"] <= MAX_PAGES
+        or not 1 <= stats["events"] <= stats["pages"] * PAGE_EVENTS
+        or not 1 <= stats["message_bytes"] <= MAX_LOG_BYTES
+    ):
+        raise CaptureError("capture_statistics_outside_limits")
+    return proof

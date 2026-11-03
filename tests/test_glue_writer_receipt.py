@@ -364,3 +364,61 @@ def test_frozen_payload_mutation_is_caught_before_publication(case):
 def test_normal_stdout_lines_can_share_the_event_with_the_json_result(case):
     case.event["message"] = "initializing writer\n" + json.dumps(case.wrapper) + "\n"
     assert run(case)["status"] == "writer_claim_captured"
+
+
+def test_saved_capture_is_revalidated_with_both_explicit_pins(case):
+    result = run(case)
+    verified = capture.load_capture(
+        case.frozen.path,
+        case.frozen.pin,
+        case.controller,
+        digest(case.controller),
+        case.output,
+        digest(case.output / "capture.json"),
+        result["writer_receipt_sha256"],
+    )
+    assert verified == json.loads((case.output / "capture.json").read_text())
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "proof_pin",
+        "writer_pin",
+        "controller_pin",
+        "wrong_run",
+        "wrong_snapshot",
+        "wrong_stream",
+        "bad_stats",
+        "bad_claim",
+    ],
+)
+def test_saved_capture_cannot_be_substituted_or_rebound(case, defect):
+    run(case)
+    proof_path = case.output / "capture.json"
+    writer_path = case.output / "writer.json"
+    proof = json.loads(proof_path.read_text())
+    if defect == "wrong_run":
+        proof["binding"]["run_id"] = "jr_other"
+    elif defect == "wrong_snapshot":
+        proof["snapshot_id"] = 124
+    elif defect == "wrong_stream":
+        proof["log_event"]["stream"] = "jr_other-driver"
+    elif defect == "bad_stats":
+        proof["statistics"]["pages"] = True
+    elif defect == "bad_claim":
+        claim = json.loads(writer_path.read_text())
+        claim["rows"] += 1
+        writer_path.write_text(json.dumps(claim))
+        proof["writer_receipt_sha256"] = digest(writer_path)
+    proof_path.write_text(json.dumps(proof))
+    with pytest.raises(ValueError):
+        capture.load_capture(
+            case.frozen.path,
+            case.frozen.pin,
+            case.controller,
+            "0" * 64 if defect == "controller_pin" else digest(case.controller),
+            case.output,
+            "0" * 64 if defect == "proof_pin" else digest(proof_path),
+            "0" * 64 if defect == "writer_pin" else digest(writer_path),
+        )

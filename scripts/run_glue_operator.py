@@ -3,13 +3,17 @@
 import argparse
 import json
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from aws_login_bridge import MAX_BYTES, envelope
+from aws_login_bridge import MAX_BYTES, TemporaryCredentials, envelope
 from glue_control import load_plan, trial_output
-from glue_operator_session import operator_credentials, operator_plan
+from glue_operator_session import create_logs_client, operator_credentials, operator_plan
+from glue_writer_receipt import CAPTURE_SECONDS, CaptureError, capture_writer_receipt, load_capture
 from run_glue_pilot import run_with_credentials
+
+from urban_geography.ingest import digest
 
 OUTCOMES = {
     "job_succeeded",
@@ -23,14 +27,72 @@ OUTCOMES = {
 }
 
 
-def operation_reply(pin: str, result: dict[str, Any] | None = None) -> dict[str, Any]:
+WRITER_REQUIRED_SECONDS = CAPTURE_SECONDS + 30
+
+
+def operation_reply(
+    pin: str, result: dict[str, Any] | None = None, writer: dict[str, str] | None = None
+) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "release_sha256": pin,
         "status": "operation_failed" if result is None else "controller_completed",
         "outcome": None if result is None else result["outcome"],
         "terminal_confirmed": False if result is None else result["terminal_confirmed"],
+        "writer_receipt_captured": writer is not None,
+        "writer_receipt_sha256": None if writer is None else writer["writer_receipt_sha256"],
+        "capture_receipt_sha256": None if writer is None else writer["capture_receipt_sha256"],
     }
+
+
+def collect_writer(
+    release: Path, pin: str, output: Path, credentials: TemporaryCredentials
+) -> dict[str, str] | None:
+    """Own one Logs client; retain controller success if capture or cleanup fails."""
+    summary = None
+    status: dict[str, Any] = {"status": "capture_incomplete"}
+    try:
+        credentials.require_operation(WRITER_REQUIRED_SECONDS)
+        controller = output / "receipt.json"
+        controller_pin = digest(controller)
+        directory = output.with_name(output.name + "-writer-capture")
+        with closing(create_logs_client(credentials)) as client:
+
+            class AdmittedLogs:
+                def filter_log_events(self, **kwargs: Any) -> dict[str, Any]:
+                    try:
+                        credentials.require_operation(WRITER_REQUIRED_SECONDS)
+                    except ValueError:
+                        raise CaptureError("insufficient_capture_credential_lifetime") from None
+                    response: dict[str, Any] = client.filter_log_events(**kwargs)
+                    return response
+
+            result = capture_writer_receipt(
+                AdmittedLogs(), release, pin, controller, controller_pin, directory
+            )
+        proof_pin = digest(directory / "capture.json")
+        load_capture(
+            release,
+            pin,
+            controller,
+            controller_pin,
+            directory,
+            proof_pin,
+            result["writer_receipt_sha256"],
+        )
+        summary = {
+            "writer_receipt_sha256": result["writer_receipt_sha256"],
+            "capture_receipt_sha256": proof_pin,
+        }
+        status = {"status": "capture_complete", **summary}
+    except Exception:
+        pass  # A later log-only capture can use the preserved successful controller receipt.
+    try:
+        with (output / "writer-capture-status.json").open("x", encoding="utf-8") as destination:
+            json.dump(status, destination)
+    except OSError:
+        return None
+    return summary
 
 
 def run_operation(
@@ -38,9 +100,12 @@ def run_operation(
 ) -> dict[str, Any]:
     trial_output(output, release)
     plan = load_plan(release, pin)
+    writer = None
     with operator_credentials(release, pin, principal_arn, content) as credentials:
         result = run_with_credentials(plan, release, output, envelope(credentials, plan["owner"]))
-    return operation_reply(pin, result)
+        if result["outcome"] == "job_succeeded" and result["terminal_confirmed"] is True:
+            writer = collect_writer(release, pin, output, credentials)
+    return operation_reply(pin, result, writer)
 
 
 def main() -> None:

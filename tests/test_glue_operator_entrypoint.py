@@ -19,6 +19,9 @@ for name in (
     "prepare_glue_iam",
     "glue_operator_session",
     "run_glue_pilot",
+    "prepare_dbt_project",
+    "writer_readback",
+    "glue_writer_receipt",
     "run_glue_operator",
 ):
     if name not in sys.modules:
@@ -52,6 +55,7 @@ def credentials(seconds=900):
 @pytest.fixture
 def case(frozen, tmp_path, monkeypatch):
     monkeypatch.setattr(control, "ROOT", tmp_path)
+    monkeypatch.setattr(worker, "collect_writer", Mock(return_value=None))
     output = tmp_path / "artifacts/operation"
     plan = control.load_plan(frozen.path, frozen.pin)
     receipt = {
@@ -211,3 +215,108 @@ def test_failed_acquisition_cannot_reach_the_controller(case, monkeypatch):
         worker.run_operation(case.frozen.path, case.frozen.pin, PRINCIPAL, case.output, b"unused")
     run.assert_not_called()
     assert not case.output.exists()
+
+
+@pytest.mark.parametrize(
+    "outcome,terminal,called",
+    [
+        ("job_succeeded", True, True),
+        ("job_failed", True, False),
+        ("stop_unconfirmed", False, False),
+    ],
+)
+def test_capture_runs_only_inside_the_live_successful_operator_context(
+    case, monkeypatch, outcome, terminal, called
+):
+    assumed = credentials(2400)
+
+    @contextmanager
+    def owned(*args):
+        try:
+            yield assumed
+        finally:
+            assumed.clear()
+
+    hashes = {"writer_receipt_sha256": "a" * 64, "capture_receipt_sha256": "b" * 64}
+
+    def collect(release, pin, output, snapshot):
+        assert snapshot is assumed and snapshot.token == TOKEN
+        return hashes
+
+    captured = Mock(side_effect=collect)
+    monkeypatch.setattr(worker, "operator_credentials", owned)
+    monkeypatch.setattr(
+        worker,
+        "run_with_credentials",
+        Mock(return_value={**case.receipt, "outcome": outcome, "terminal_confirmed": terminal}),
+    )
+    monkeypatch.setattr(worker, "collect_writer", captured)
+    result = worker.run_operation(
+        case.frozen.path, case.frozen.pin, PRINCIPAL, case.output, b"unused"
+    )
+    assert result["writer_receipt_captured"] is called
+    assert result["outcome"] == outcome and assumed.token == ""
+    assert captured.call_count == int(called)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["success", "short", "expires_between_pages", "sdk_create", "api", "close", "status_write"],
+)
+def test_capture_connection_admits_requests_and_closes_client_without_losing_controller_result(
+    case, monkeypatch, mode
+):
+    # Exercise the real connection function, which the ordinary entrypoint fixture isolates.
+    from importlib import util
+
+    spec = util.spec_from_file_location(
+        "capture_worker_test", ROOT / "scripts/run_glue_operator.py"
+    )
+    bound = util.module_from_spec(spec)
+    spec.loader.exec_module(bound)
+    case.output.mkdir(parents=True)
+    controller = case.output / "receipt.json"
+    controller.write_text(json.dumps(case.receipt))
+    original = controller.read_bytes()
+    assumed = credentials(89 if mode == "short" else 2400)
+    client = SimpleNamespace(filter_log_events=Mock(return_value={"events": []}), close=Mock())
+    factory = Mock(return_value=client)
+    if mode == "sdk_create":
+        factory.side_effect = RuntimeError(SECRET)
+    if mode == "api":
+        client.filter_log_events.side_effect = RuntimeError(SECRET)
+    if mode == "close":
+        client.close.side_effect = RuntimeError(SECRET)
+
+    def capture(logs, release, pin, path, controller_pin, output):
+        logs.filter_log_events()
+        if mode == "expires_between_pages":
+            assumed.expiration = datetime.now(UTC) + timedelta(seconds=89)
+            logs.filter_log_events()
+        output.mkdir()
+        (output / "capture.json").write_text("proof")
+        return {"writer_receipt_sha256": "a" * 64}
+
+    monkeypatch.setattr(bound, "create_logs_client", factory)
+    monkeypatch.setattr(bound, "capture_writer_receipt", capture)
+    monkeypatch.setattr(bound, "load_capture", Mock())
+    if mode == "status_write":
+        original_open = Path.open
+
+        def open_path(path, *args, **kwargs):
+            if path.name == "writer-capture-status.json":
+                raise OSError("synthetic full disk")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", open_path)
+    result = bound.collect_writer(case.frozen.path, case.frozen.pin, case.output, assumed)
+    assert (result is not None) == (mode == "success")
+    assert controller.read_bytes() == original
+    if mode != "status_write":
+        assert SECRET not in (case.output / "writer-capture-status.json").read_text()
+    assert client.close.call_count == (0 if mode in {"short", "sdk_create"} else 1)
+    assert client.filter_log_events.call_count == (0 if mode in {"short", "sdk_create"} else 1)
+    if mode == "short":
+        factory.assert_not_called()
+    assert assumed.token == TOKEN  # The surrounding operator context owns this snapshot.
+    assumed.clear()
