@@ -1,5 +1,6 @@
 """One in-memory credential snapshot and reliable client cleanup; no credential discovery."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -17,7 +18,13 @@ def case(monkeypatch):
     fixed = Mock()
     session_class = Mock(return_value=fixed)
     monkeypatch.setattr(
-        clients, "import_module", Mock(return_value=SimpleNamespace(Session=session_class))
+        clients,
+        "import_module",
+        Mock(
+            return_value=SimpleNamespace(
+                Session=session_class, Config=Mock(return_value="fixed-policy")
+            )
+        ),
     )
     monkeypatch.setattr(clients, "version", lambda name: clients.tooling_sdk_pins()[name])
     athena, sts, glue = Mock(), Mock(), Mock()
@@ -46,7 +53,7 @@ def test_clients_share_frozen_identity_and_policy_and_close_without_logging_secr
                 "use_ssl": True,
                 "verify": True,
                 "endpoint_url": f"https://{service}.eu-north-1.amazonaws.com",
-                "config": athena.meta.config,
+                "config": athena.meta.config.merge.return_value,
             }
         for client in opened.values():
             client.close.assert_not_called()
@@ -100,7 +107,7 @@ def test_optional_result_client_shares_credentials_and_uses_s3_policy(case, monk
     s3 = Mock()
     fixed.client.side_effect = [sts, glue, s3]
     importer = clients.import_module
-    config_class = Mock(return_value="s3-overrides")
+    config_class = Mock(side_effect=["fixed-policy", "s3-overrides"])
     monkeypatch.setattr(
         clients,
         "import_module",
@@ -110,17 +117,26 @@ def test_optional_result_client_shares_credentials_and_uses_s3_policy(case, monk
     )
     with clients.query_clients(session=selected, include_results=True) as opened:
         assert opened["s3"] is s3
-        config_class.assert_called_once_with(
-            signature_version="s3v4", s3={"addressing_style": "virtual"}
-        )
-        athena.meta.config.merge.assert_called_once_with("s3-overrides")
+        assert config_class.call_args_list == [
+            (
+                (),
+                {
+                    "ignore_configured_endpoint_urls": True,
+                    "use_fips_endpoint": False,
+                    "use_dualstack_endpoint": False,
+                },
+            ),
+            ((), {"signature_version": "s3v4", "s3": {"addressing_style": "virtual"}}),
+        ]
+        athena.meta.config.merge.assert_called_once_with("fixed-policy")
+        athena.meta.config.merge.return_value.merge.assert_called_once_with("s3-overrides")
         fixed.client.assert_called_with(
             "s3",
             region_name="eu-north-1",
             use_ssl=True,
             verify=True,
             endpoint_url="https://s3.eu-north-1.amazonaws.com",
-            config=athena.meta.config.merge.return_value,
+            config=athena.meta.config.merge.return_value.merge.return_value,
         )
     for client in (athena, sts, glue, s3):
         client.close.assert_called_once()
@@ -171,3 +187,103 @@ def test_reader_credential_mapping_is_cleared_after_body_failure(case):
             environment = resources.reader_environment
             raise RuntimeError("reader failed")
     assert environment == {}
+
+
+def temporary_snapshot():
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    if "aws_login_bridge" not in sys.modules:
+        path = Path(__file__).resolve().parents[1] / "scripts/aws_login_bridge.py"
+        spec = importlib.util.spec_from_file_location("aws_login_bridge", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["aws_login_bridge"] = module
+        spec.loader.exec_module(module)
+    TemporaryCredentials = sys.modules["aws_login_bridge"].TemporaryCredentials
+
+    return TemporaryCredentials(
+        "ASIA" + "A" * 16,
+        "s" * 40,
+        "dummyReaderToken",
+        datetime.now(UTC) + timedelta(seconds=3500),
+        "123456789012",
+    )
+
+
+def test_explicit_snapshot_never_discovers_or_refreezes_credentials(case):
+    selected, fixed, session_class, athena, sts, glue = case
+    snapshot = temporary_snapshot()
+    try:
+        with clients.query_resources(snapshot=snapshot) as resources:
+            session_class.assert_called_once_with(
+                region_name="eu-north-1", **snapshot.session_options()
+            )
+            selected.get_credentials.assert_not_called()
+            fixed.get_credentials.assert_not_called()
+            assert resources.reader_environment["AWS_SESSION_TOKEN"] == snapshot.token
+            environment = resources.reader_environment
+        assert environment == {}
+        assert snapshot.token == "dummyReaderToken"  # The outer role context owns this object.
+        for client in (athena, sts, glue):
+            client.close.assert_called_once()
+    finally:
+        snapshot.clear()
+
+
+def test_explicit_snapshot_and_session_are_mutually_exclusive(case):
+    snapshot = temporary_snapshot()
+    try:
+        with pytest.raises(ValueError, match="Choose one"):
+            with clients.query_resources(session=case[0], snapshot=snapshot):
+                pytest.fail("must not open clients")
+        case[2].assert_not_called()
+    finally:
+        snapshot.clear()
+
+
+@pytest.mark.parametrize("defect", ["expired", "cleared", "missing_token"])
+def test_invalid_explicit_snapshot_never_falls_back_to_the_provider(case, defect):
+    snapshot = temporary_snapshot()
+    if defect == "expired":
+        snapshot.expiration = datetime.now(UTC) - timedelta(seconds=1)
+    elif defect == "cleared":
+        snapshot.clear()
+    else:
+        snapshot.token = ""
+    try:
+        with pytest.raises(ValueError):
+            with clients.query_resources(snapshot=snapshot):
+                pytest.fail("must not open clients")
+        case[2].assert_not_called()
+        case[0].get_credentials.assert_not_called()
+    finally:
+        snapshot.clear()
+
+
+def test_explicit_snapshot_factory_failure_does_not_leave_the_environment(case):
+    snapshot = temporary_snapshot()
+    case[2].side_effect = RuntimeError("SDK session unavailable")
+    try:
+        with pytest.raises(RuntimeError, match="unavailable"):
+            with clients.query_resources(snapshot=snapshot):
+                pytest.fail("must not open clients")
+        case[0].get_credentials.assert_not_called()
+        case[3].close.assert_not_called()
+        assert snapshot.token == "dummyReaderToken"
+    finally:
+        snapshot.clear()
+
+
+def test_snapshot_client_close_failure_still_attempts_other_closes_and_clears_environment(case):
+    snapshot = temporary_snapshot()
+    case[5].close.side_effect = RuntimeError("close failed")
+    try:
+        with pytest.raises(RuntimeError, match="close failed"):
+            with clients.query_resources(snapshot=snapshot) as resources:
+                environment = resources.reader_environment
+        assert environment == {}
+        for client in case[3:]:
+            client.close.assert_called_once()
+    finally:
+        snapshot.clear()
