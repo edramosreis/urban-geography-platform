@@ -116,3 +116,19 @@ variable "enable_dbt_view_builder_policy" {
   type        = bool
   default     = false
 }
+
+
+variable "glue_operator_principal_arn" {
+  description = "Optional exact same-account IAM role allowed to assume the pilot operator; null creates no operator."
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.glue_operator_principal_arn == null ? true : (
+      length(var.glue_operator_principal_arn) <= 576 &&
+      can(regex("^arn:aws:iam::${var.aws_account_id}:role/([A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}$", var.glue_operator_principal_arn)) &&
+      var.glue_operator_principal_arn != "arn:aws:iam::${var.aws_account_id}:role/${var.deployment_name}-glue-operator"
+    )
+    error_message = "Choose one existing same-account IAM role ARN, including its path; no session ARN, root, wildcard or operator self-trust."
+  }
+}

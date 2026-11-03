@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,16 @@ from urban_geography.glue_input import MAX_SUMMARY_BYTES, PROJECT_ROOT
 from urban_geography.glue_release import load_release
 
 
-def prepare(release: Path, pin: str, output: Path, *, include_job: bool = False) -> dict[str, Any]:
+def prepare(
+    release: Path,
+    pin: str,
+    output: Path,
+    *,
+    include_job: bool = False,
+    operator_principal_arn: str | None = None,
+) -> dict[str, Any]:
+    if operator_principal_arn is not None and not include_job:
+        raise ValueError("An operator requires --include-job")
     output = output.resolve()
     if output.exists() or not output.name.endswith(".tfvars.json"):
         raise ValueError("Use a fresh private .tfvars.json file")
@@ -39,6 +49,23 @@ def prepare(release: Path, pin: str, output: Path, *, include_job: bool = False)
         if len(content) > MAX_SUMMARY_BYTES or hashlib.sha256(content).hexdigest() != pin:
             raise ValueError("Release manifest changed before job export")
         result["glue_job_release_json"] = content.decode("utf-8")
+    if operator_principal_arn is not None:
+        if (
+            not isinstance(operator_principal_arn, str)
+            or len(operator_principal_arn) > 576
+            or not re.fullmatch(
+                r"arn:aws:iam::"
+                + target["account_id"]
+                + r":role/(?:[A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}",
+                operator_principal_arn,
+            )
+            or operator_principal_arn
+            == f"arn:aws:iam::{target['account_id']}:role/{target['deployment_name']}-glue-operator"
+        ):
+            raise ValueError(
+                "Use one existing same-account IAM role ARN, excluding operator self-trust"
+            )
+        result["glue_operator_principal_arn"] = operator_principal_arn
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(result, indent=2) + "\n")
@@ -51,8 +78,15 @@ def main() -> None:
     parser.add_argument("--release-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--include-job", action="store_true")
+    parser.add_argument("--operator-principal-arn")
     args = parser.parse_args()
-    result = prepare(args.release, args.release_sha256, args.output, include_job=args.include_job)
+    result = prepare(
+        args.release,
+        args.release_sha256,
+        args.output,
+        include_job=args.include_job,
+        operator_principal_arn=args.operator_principal_arn,
+    )
     print(
         json.dumps(
             {

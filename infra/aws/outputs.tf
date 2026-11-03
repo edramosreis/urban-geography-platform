@@ -59,3 +59,9 @@ output "dbt_view_builder_policy_arn" {
   description = "Unattached standalone dbt policy; choose and approve its identity separately."
   value       = try(aws_iam_policy.dbt_view_builder[0].arn, null)
 }
+
+
+output "glue_operator_role_arn" {
+  description = "Optional scoped controller role; creation and assuming it require separately approved AWS changes."
+  value       = try(aws_iam_role.glue_operator[0].arn, null)
+}

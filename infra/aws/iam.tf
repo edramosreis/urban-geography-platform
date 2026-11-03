@@ -181,3 +181,53 @@ resource "aws_cloudwatch_log_group" "glue" {
   name              = "${local.glue_log_prefix}/${each.key}"
   retention_in_days = 7
 }
+
+
+# This is the human controller's role, separate from Glue's service execution role.
+# IAM scopes the job, not an individual run, and does not enforce a one-run budget.
+resource "aws_iam_role" "glue_operator" {
+  count = var.glue_operator_principal_arn == null ? 0 : 1
+
+  name                 = "${var.deployment_name}-glue-operator"
+  max_session_duration = 3600
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { AWS = var.glue_operator_principal_arn }
+    }]
+  })
+
+  lifecycle {
+    precondition {
+      condition     = local.job_enabled
+      error_message = "The operator requires the verified release and its optional pilot job."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "glue_operator" {
+  count = var.glue_operator_principal_arn != null && local.job_enabled ? 1 : 0
+
+  name = "pilot-control"
+  role = aws_iam_role.glue_operator[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ControlOnePilotJob"
+        Effect   = "Allow"
+        Action   = ["glue:GetJob", "glue:StartJobRun", "glue:GetJobRun", "glue:BatchStopJobRun"]
+        Resource = local.job_arn
+      },
+      {
+        Sid       = "VerifyReleaseCompletion"
+        Effect    = "Allow"
+        Action    = "s3:GetObject"
+        Resource  = "arn:aws:s3:::${local.bucket_names["lake"]}/runtime/releases/${var.glue_release.release_id}/release.json"
+        Condition = local.same_bucket_owner
+      },
+    ]
+  })
+}

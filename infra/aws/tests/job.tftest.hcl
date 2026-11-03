@@ -205,3 +205,116 @@ run "reject_oversized_arguments" {
   }
   expect_failures = [aws_glue_job.pilot[0]]
 }
+
+
+run "operator_trust_and_session_duration_are_explicit" {
+  command = plan
+  variables {
+    glue_operator_principal_arn = "arn:aws:iam::123456789012:role/managed/project/login"
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_role.glue_operator[0]
+    values          = { arn = "arn:aws:iam::123456789012:role/urban-geo-test-glue-operator" }
+  }
+  assert {
+    condition = (
+      aws_iam_role.glue_operator[0].name == "urban-geo-test-glue-operator" &&
+      aws_iam_role.glue_operator[0].max_session_duration == 3600 &&
+      jsondecode(aws_iam_role.glue_operator[0].assume_role_policy) == {
+        Version = "2012-10-17"
+        Statement = [{
+          Effect    = "Allow"
+          Action    = "sts:AssumeRole"
+          Principal = { AWS = var.glue_operator_principal_arn }
+        }]
+      } &&
+      output.glue_operator_role_arn == "arn:aws:iam::123456789012:role/urban-geo-test-glue-operator"
+    )
+    error_message = "Only the chosen existing IAM role may assume the one-hour operator role."
+  }
+  assert {
+    condition = (
+      jsondecode(aws_iam_role_policy.glue_operator[0].policy) == {
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Sid      = "ControlOnePilotJob"
+            Effect   = "Allow"
+            Action   = ["glue:GetJob", "glue:StartJobRun", "glue:GetJobRun", "glue:BatchStopJobRun"]
+            Resource = "arn:aws:glue:eu-north-1:123456789012:job/urban-geo-test-pilot-writer"
+          },
+          {
+            Sid       = "VerifyReleaseCompletion"
+            Effect    = "Allow"
+            Action    = "s3:GetObject"
+            Resource  = "arn:aws:s3:::urban-geo-test-lake-123456789012-eu-north-1/runtime/releases/${var.glue_release.release_id}/release.json"
+            Condition = { StringEquals = { "s3:ResourceAccount" = "123456789012" } }
+          },
+        ]
+      }
+    )
+    error_message = "Grant only four actions on one job and readback of one completion record; no PassRole, job edits, S3 writes or IAM management."
+  }
+}
+
+run "operator_is_omitted_by_default" {
+  command = plan
+  assert {
+    condition = (
+      length(aws_iam_role.glue_operator) == 0 &&
+      length(aws_iam_role_policy.glue_operator) == 0 && output.glue_operator_role_arn == null
+    )
+    error_message = "Existing job preparations must not silently gain an operator."
+  }
+}
+
+run "operator_requires_job" {
+  command = plan
+  variables {
+    glue_operator_principal_arn = "arn:aws:iam::123456789012:role/login"
+    glue_job_release_json       = null
+  }
+  expect_failures = [aws_iam_role.glue_operator[0]]
+}
+
+run "operator_rejects_another_account" {
+  command = plan
+  variables { glue_operator_principal_arn = "arn:aws:iam::999999999999:role/login" }
+  expect_failures = [var.glue_operator_principal_arn]
+}
+
+run "operator_rejects_session_arn" {
+  command = plan
+  variables { glue_operator_principal_arn = "arn:aws:sts::123456789012:assumed-role/login/session" }
+  expect_failures = [var.glue_operator_principal_arn]
+}
+
+run "operator_rejects_account_root" {
+  command = plan
+  variables { glue_operator_principal_arn = "arn:aws:iam::123456789012:root" }
+  expect_failures = [var.glue_operator_principal_arn]
+}
+
+run "operator_rejects_wildcard_trust" {
+  command = plan
+  variables { glue_operator_principal_arn = "arn:aws:iam::123456789012:role/*" }
+  expect_failures = [var.glue_operator_principal_arn]
+}
+
+run "operator_rejects_self_trust" {
+  command = plan
+  variables { glue_operator_principal_arn = "arn:aws:iam::123456789012:role/urban-geo-test-glue-operator" }
+  expect_failures = [var.glue_operator_principal_arn]
+}
+
+
+run "operator_requires_release" {
+  command = plan
+  variables {
+    glue_operator_principal_arn = "arn:aws:iam::123456789012:role/login"
+    glue_job_release_json       = null
+    glue_release                = null
+  }
+  expect_failures = [aws_iam_role.glue_operator[0]]
+}

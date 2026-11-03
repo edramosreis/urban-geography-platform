@@ -84,6 +84,7 @@ def test_job_export_preserves_the_exact_pinned_manifest_bytes(frozen, line_endin
 def test_iam_only_export_leaves_job_omitted(frozen):
     result = PREPARE(frozen.path, frozen.pin, frozen.path.parent / "iam.tfvars.json")
     assert "glue_job_release_json" not in result
+    assert "glue_operator_principal_arn" not in result
 
 
 def test_synthetic_job_fixture_matches_the_current_frozen_recipe():
@@ -110,3 +111,51 @@ def test_job_export_rechecks_the_manifest_after_inventory_validation(frozen, mon
     with pytest.raises(ValueError, match="changed before job export"):
         PREPARE(frozen.path, frozen.pin, output, include_job=True)
     assert not output.exists() and not output.parent.exists()
+
+
+@pytest.mark.parametrize("path", ["login", "managed/project/login"])
+def test_operator_export_binds_one_existing_same_account_role(frozen, path):
+    principal = f"arn:aws:iam::123456789012:role/{path}"
+    output = frozen.path.parent / "operator.tfvars.json"
+    result = PREPARE(
+        frozen.path, frozen.pin, output, include_job=True, operator_principal_arn=principal
+    )
+    assert result["glue_operator_principal_arn"] == principal
+    assert json.loads(output.read_text()) == result
+    assert "glue_job_release_json" in result
+
+
+def test_operator_requires_the_frozen_job(frozen):
+    output = frozen.path.parent / "private/operator.tfvars.json"
+    with pytest.raises(ValueError, match="requires --include-job"):
+        PREPARE(
+            frozen.path,
+            frozen.pin,
+            output,
+            operator_principal_arn="arn:aws:iam::123456789012:role/login",
+        )
+    assert not output.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        "arn:aws:iam::999999999999:role/login",
+        "arn:aws:sts::123456789012:assumed-role/login/session",
+        "arn:aws:iam::123456789012:root",
+        "arn:aws:iam::123456789012:user/login",
+        "arn:aws:iam::123456789012:role/*",
+        "arn:aws:iam::123456789012:role/login*",
+        "arn:aws:iam::123456789012:role//login",
+        "arn:aws:iam::123456789012:role/urban-geo-test-glue-operator",
+        "arn:aws:iam::123456789012:role/" + "x" * 65,
+        "arn:aws:iam::123456789012:role/" + "path/" * 110 + "login",
+        " arn:aws:iam::123456789012:role/login",
+        "arn:aws:iam::123456789012:role/login\n",
+    ],
+)
+def test_operator_rejects_ambiguous_or_unscoped_trust_before_writing(frozen, principal):
+    output = frozen.path.parent / "private/operator.tfvars.json"
+    with pytest.raises(ValueError, match="same-account IAM role"):
+        PREPARE(frozen.path, frozen.pin, output, include_job=True, operator_principal_arn=principal)
+    assert not output.parent.exists()
