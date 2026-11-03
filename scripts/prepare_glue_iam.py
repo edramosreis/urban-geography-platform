@@ -13,6 +13,12 @@ from urban_geography.glue_release import load_release
 
 
 def validate_operator_principal(value: str, owner: str, deployment: str) -> str:
+    return validate_role_principal(
+        value, owner, f"arn:aws:iam::{owner}:role/{deployment}-glue-operator"
+    )
+
+
+def validate_role_principal(value: str, owner: str, target_role_arn: str) -> str:
     if (
         not isinstance(value, str)
         or len(value) > 576
@@ -20,10 +26,10 @@ def validate_operator_principal(value: str, owner: str, deployment: str) -> str:
             r"arn:aws:iam::" + owner + r":role/(?:[A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}",
             value,
         )
-        or value == f"arn:aws:iam::{owner}:role/{deployment}-glue-operator"
+        or value == target_role_arn
     ):
         raise ValueError(
-            "Use one existing same-account IAM role ARN, excluding operator self-trust"
+            "Use one existing same-account IAM role ARN, excluding target-role self-trust"
         )
     return value
 
