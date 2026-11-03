@@ -46,13 +46,12 @@ run "release_and_operational_arguments_cannot_be_overridden" {
     condition = (
       length(aws_glue_job.pilot[0].default_arguments) == 0 &&
       aws_glue_job.pilot[0].non_overridable_arguments == tomap(merge(jsondecode(var.glue_job_release_json).job.arguments, {
-        "--scriptLocation"          = jsondecode(var.glue_job_release_json).job.script_location
-        "--job-language"            = "python"
-        "--job-bookmark-option"     = "job-bookmark-disable"
-        "--enable-auto-scaling"     = "false"
-        "--custom-logGroup-prefix"  = "/urban-geography/urban-geo-test/glue"
-        "--custom-logStream-prefix" = "urban-geo-test-pilot"
-        "--TempDir"                 = "s3://urban-geo-test-lake-123456789012-eu-north-1/scratch/glue/${var.glue_release.release_id}/"
+        "--scriptLocation"         = jsondecode(var.glue_job_release_json).job.script_location
+        "--job-language"           = "python"
+        "--job-bookmark-option"    = "job-bookmark-disable"
+        "--enable-auto-scaling"    = "false"
+        "--custom-logGroup-prefix" = "/urban-geography/urban-geo-test/glue"
+        "--TempDir"                = "s3://urban-geo-test-lake-123456789012-eu-north-1/scratch/glue/${var.glue_release.release_id}/"
       }))
     )
     error_message = "All frozen software/input arguments, script override and operational settings must be non-overridable."
@@ -251,10 +250,16 @@ run "operator_trust_and_session_duration_are_explicit" {
             Resource  = "arn:aws:s3:::urban-geo-test-lake-123456789012-eu-north-1/runtime/releases/${var.glue_release.release_id}/release.json"
             Condition = { StringEquals = { "s3:ResourceAccount" = "123456789012" } }
           },
+          {
+            Sid      = "ReadPilotOutputLogs"
+            Effect   = "Allow"
+            Action   = "logs:FilterLogEvents"
+            Resource = "arn:aws:logs:eu-north-1:123456789012:log-group:/urban-geography/urban-geo-test/glue/output:*"
+          },
         ]
       }
     )
-    error_message = "Grant only four actions on one job and readback of one completion record; no PassRole, job edits, S3 writes or IAM management."
+    error_message = "Grant only pilot job control, one completion read and filtering one output log group; no PassRole, job edits, S3 writes or IAM management."
   }
 }
 
@@ -317,4 +322,16 @@ run "operator_requires_release" {
     glue_release                = null
   }
   expect_failures = [aws_iam_role.glue_operator[0]]
+}
+
+
+run "job_preserves_run_based_log_streams" {
+  command = plan
+  assert {
+    condition = (
+      !contains(keys(aws_glue_job.pilot[0].non_overridable_arguments), "--custom-logStream-prefix") &&
+      aws_glue_job.pilot[0].non_overridable_arguments["--custom-logGroup-prefix"] == "/urban-geography/urban-geo-test/glue"
+    )
+    error_message = "Keep the dedicated log group but let Glue use its default run-based stream names."
+  }
 }

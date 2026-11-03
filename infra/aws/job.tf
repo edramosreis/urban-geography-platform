@@ -38,13 +38,12 @@ locals {
     false,
   )
   job_arguments = merge(try(tomap(local.job_release.job.arguments), {}), {
-    "--scriptLocation"          = local.job_script_uri
-    "--job-language"            = "python"
-    "--job-bookmark-option"     = "job-bookmark-disable"
-    "--enable-auto-scaling"     = "false"
-    "--custom-logGroup-prefix"  = local.glue_log_prefix
-    "--custom-logStream-prefix" = "${var.deployment_name}-pilot"
-    "--TempDir"                 = "s3://${local.bucket_names["lake"]}/${local.scratch_prefix}/"
+    "--scriptLocation"         = local.job_script_uri
+    "--job-language"           = "python"
+    "--job-bookmark-option"    = "job-bookmark-disable"
+    "--enable-auto-scaling"    = "false"
+    "--custom-logGroup-prefix" = local.glue_log_prefix
+    "--TempDir"                = "s3://${local.bucket_names["lake"]}/${local.scratch_prefix}/"
   })
 }
 

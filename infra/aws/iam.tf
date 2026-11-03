@@ -228,6 +228,12 @@ resource "aws_iam_role_policy" "glue_operator" {
         Resource  = "arn:aws:s3:::${local.bucket_names["lake"]}/runtime/releases/${var.glue_release.release_id}/release.json"
         Condition = local.same_bucket_owner
       },
+      {
+        Sid      = "ReadPilotOutputLogs"
+        Effect   = "Allow"
+        Action   = "logs:FilterLogEvents"
+        Resource = "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:${local.glue_log_prefix}/output:*"
+      },
     ]
   })
 }

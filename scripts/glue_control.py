@@ -41,7 +41,6 @@ def load_plan(release: Path, pin: str) -> dict[str, Any]:
         "--job-bookmark-option": "job-bookmark-disable",
         "--enable-auto-scaling": "false",
         "--custom-logGroup-prefix": f"/urban-geography/{deployment}/glue",
-        "--custom-logStream-prefix": deployment + "-pilot",
         "--TempDir": f"s3://{manifest['bucket']}/{scratch}",
     }
     job = {

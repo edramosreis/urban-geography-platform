@@ -130,3 +130,14 @@ def test_bad_control_region_is_rejected_before_sdk_resolution(monkeypatch, regio
     monkeypatch.setattr(control, "version", lambda name: pytest.fail("No SDK resolution"))
     with pytest.raises(ValueError, match="scoped"):
         control.create_glue_client(region=region)
+
+
+def test_old_shared_log_prefix_is_rejected_before_submission(control_case):
+    case = control_case
+    assert "--custom-logStream-prefix" not in case.plan["job"]["NonOverridableArguments"]
+    case.glue.get_job.return_value["Job"]["NonOverridableArguments"][
+        "--custom-logStream-prefix"
+    ] = "shared"
+    with pytest.raises(ValueError, match="NonOverridableArguments"):
+        control.preflight(case.glue, case.s3, case.plan)
+    case.s3.get_object.assert_not_called()
