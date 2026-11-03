@@ -40,58 +40,50 @@ def test_journal_refuses_unsafe_or_frozen_locations(tmp_path, monkeypatch, kind)
 
 
 @pytest.mark.parametrize(
-    "mode", ["success", "failed_run", "controller_error", "s3_factory_error", "existing_output"]
+    "mode", ["success", "failed_run", "controller_error", "existing_output", "missing_stdin"]
 )
-def test_cli_closes_only_its_owned_clients_on_every_path(
+def test_cli_requires_explicit_credentials_and_delegates_one_attempt(
     frozen, tmp_path, monkeypatch, capsys, mode
 ):
     monkeypatch.setattr(control, "ROOT", tmp_path)
     output = tmp_path / "artifacts/trial"
     if mode == "existing_output":
         output.mkdir(parents=True)
-    glue = SimpleNamespace(close=Mock())
-    s3 = SimpleNamespace(close=Mock())
-    glue_factory = Mock(return_value=glue)
-    s3_factory = Mock(return_value=s3)
-    if mode == "s3_factory_error":
-        s3_factory.side_effect = RuntimeError("SDK construction failed")
-    result = {"outcome": "job_succeeded" if mode == "success" else "job_failed"}
-    execute = Mock(return_value=result)
-    if mode == "controller_error":
-        execute.side_effect = RuntimeError("controller failure")
     main = runpy.run_path(str(ROOT / "scripts/run_glue_pilot.py"))["main"]
-    monkeypatch.setitem(main.__globals__, "create_glue_client", glue_factory)
-    monkeypatch.setitem(main.__globals__, "create_input_client", s3_factory)
-    monkeypatch.setitem(main.__globals__, "execute_trial", execute)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run_glue_pilot.py",
-            "--release",
-            str(frozen.path),
-            "--release-sha256",
-            frozen.pin,
-            "--execute",
-            "--output",
-            str(output),
-        ],
-    )
+    result = {"outcome": "job_succeeded" if mode == "success" else "job_failed"}
+    run = Mock(return_value=result)
+    if mode == "controller_error":
+        run.side_effect = RuntimeError("controller failure")
+    monkeypatch.setitem(main.__globals__, "run_with_credentials", run)
+    stream = Mock()
+    stream.read.return_value = b"explicit dummy handoff"
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=stream))
+    command = [
+        "run_glue_pilot.py",
+        "--release",
+        str(frozen.path),
+        "--release-sha256",
+        frozen.pin,
+        "--execute",
+        "--output",
+        str(output),
+    ]
+    if mode != "missing_stdin":
+        command.append("--credentials-stdin")
+    monkeypatch.setattr(sys, "argv", command)
     if mode == "success":
         main()
         assert json.loads(capsys.readouterr().out)["outcome"] == "job_succeeded"
-    elif mode == "failed_run":
-        with pytest.raises(SystemExit) as captured:
+    elif mode in {"failed_run", "missing_stdin"}:
+        with pytest.raises(SystemExit) as error:
             main()
-        assert captured.value.code == 2
+        assert error.value.code == 2
     else:
         with pytest.raises((RuntimeError, ValueError)):
             main()
-    if mode == "existing_output":
-        glue_factory.assert_not_called()
-        s3_factory.assert_not_called()
+    if mode in {"existing_output", "missing_stdin"}:
+        stream.read.assert_not_called()
+        run.assert_not_called()
     else:
-        glue.close.assert_called_once()
-        if mode != "s3_factory_error":
-            s3.close.assert_called_once()
-    assert (output / "receipt.json").exists() == (mode in {"success", "failed_run"})
+        stream.read.assert_called_once_with(main.__globals__["MAX_BYTES"] + 1)
+        assert run.call_count == 1 and run.call_args.args[-1] == b"explicit dummy handoff"

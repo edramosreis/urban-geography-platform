@@ -44,6 +44,19 @@ def owned_clients(credentials: TemporaryCredentials, sdk: str) -> Iterator[dict[
             raise BridgeError("unsupported_sdk_environment")
 
 
+def verify_identity(identity: dict[str, Any], owner: str) -> None:
+    """Check only account and assumed-role identity; this is not a permission grant."""
+    if (
+        identity.get("Account") != owner
+        or not isinstance(identity.get("Arn"), str)
+        or not re.fullmatch(
+            r"arn:aws:sts::" + owner + r":assumed-role/[A-Za-z0-9+=,.@_/-]+/[A-Za-z0-9+=,.@_-]+",
+            identity["Arn"],
+        )
+    ):
+        raise BridgeError("identity_differs_from_expected_project_role")
+
+
 def probe(content: bytes, sdk: str, *, offline: bool = False) -> dict[str, Any]:
     if sdk not in {"glue", "analytics"}:
         raise BridgeError("unsupported_sdk_environment")
@@ -65,17 +78,7 @@ def probe(content: bytes, sdk: str, *, offline: bool = False) -> dict[str, Any]:
                         {},
                     )
                 identity = clients["sts"].get_caller_identity()
-                if (
-                    identity.get("Account") != owner
-                    or not isinstance(identity.get("Arn"), str)
-                    or not re.fullmatch(
-                        r"arn:aws:sts::"
-                        + owner
-                        + r":assumed-role/[A-Za-z0-9+=,.@_/-]+/[A-Za-z0-9+=,.@_-]+",
-                        identity["Arn"],
-                    )
-                ):
-                    raise BridgeError("identity_differs_from_expected_project_role")
+                verify_identity(identity, owner)
                 if offline:
                     stub.assert_no_pending_responses()
             credentials.require_lifetime()

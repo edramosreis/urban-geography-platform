@@ -1024,3 +1024,28 @@ response and always labels its reply as simulated. It is not live identity proof
 
 AWS documents [CLI credential export](https://docs.aws.amazon.com/cli/latest/reference/configure/export-credentials.html)
 and the [process credential format](https://docs.aws.amazon.com/sdkref/latest/guide/feature-process-credentials.html).
+
+
+### Glue operator credential admission
+
+The Glue operator entrypoint requires --credentials-stdin alongside --execute.
+It accepts the same explicit temporary-credential envelope as the login bridge;
+there is no ambient credential fallback for execution. Plan-only mode does not
+read stdin and reports its credential_admission policy.
+
+The required remaining lifetime is 1,200 seconds: the existing 900-second watch,
+120-second stop-confirmation window and a 180-second reserve. Admission runs
+before SDK clients are created, again after the exact-account/assumed-role STS
+check, and after the job/release preflight immediately before start_intent.
+A failed recheck records a denial and cannot reach StartJobRun. Owned clients
+close and credential references clear on all exits. Journals contain policy and
+outcome metadata, without credential values.
+
+This is an admission horizon, not a guaranteed runtime bound or proof that
+credentials cannot be revoked early. Existing controller/job timeouts and
+stop-unconfirmed handling remain separate. It neither extends credentials nor
+refreshes them automatically. A short browser-login export may therefore be
+valid for the identity probe but too short for Glue supervision; a sufficiently
+long-lived scoped session or a reviewed refresh mechanism is still needed.
+Athena/dbt credential lifetime integration and the host pipeline launcher remain
+separate increments. No real Glue execution is authorized by these changes.

@@ -13,6 +13,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 for name in ("aws_login_bridge", "aws_login_probe"):
+    if name in sys.modules:
+        continue
     spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module

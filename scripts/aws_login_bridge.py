@@ -62,6 +62,15 @@ class TemporaryCredentials:
         if not 60 <= remaining <= 12 * 3600:
             raise BridgeError("temporary_credentials_expired_or_outside_window")
 
+    def require_operation(self, seconds: int, now: datetime | None = None) -> None:
+        """Require enough snapshot lifetime without extending it or starting a refresh."""
+        if type(seconds) is not int or not 60 <= seconds <= 12 * 3600:
+            raise BridgeError("invalid_operation_lifetime")
+        checked_at = now or datetime.now(UTC)
+        self.require_lifetime(checked_at)
+        if (self.expiration - checked_at).total_seconds() < seconds:
+            raise BridgeError("credential_lifetime_too_short_for_operation")
+
     def record(self) -> dict[str, Any]:
         result = {
             "Version": 1,

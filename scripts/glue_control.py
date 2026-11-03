@@ -148,20 +148,37 @@ MAX_OBSERVATIONS = 90
 WATCH_SECONDS = 900
 MAX_STOP_OBSERVATIONS = 12
 STOP_SECONDS = 120
+CREDENTIAL_RESERVE_SECONDS = 180
 TERMINAL = {"SUCCEEDED", "FAILED", "STOPPED", "TIMEOUT", "ERROR", "EXPIRED"}
 ACTIVE = {"STARTING", "RUNNING", "STOPPING", "WAITING"}
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def credential_admission() -> dict[str, int]:
+    """Snapshot admission horizon; controller/job deadlines remain independent."""
+    return {
+        "watch_seconds": WATCH_SECONDS,
+        "stop_seconds": STOP_SECONDS,
+        "reserve_seconds": CREDENTIAL_RESERVE_SECONDS,
+        "required_lifetime_seconds": WATCH_SECONDS + STOP_SECONDS + CREDENTIAL_RESERVE_SECONDS,
+    }
+
+
+def trial_output(output: Path, release: Path) -> Path:
+    """Check the journal destination without creating files or discovering credentials."""
+    resolved, source = output.resolve(), release.resolve()
+    if output.is_symlink() or output.exists() or not resolved.is_relative_to(ROOT / "artifacts"):
+        raise ValueError("Use a fresh attempt directory under the project's ignored artifacts")
+    if resolved.is_relative_to(source) or source.is_relative_to(resolved):
+        raise ValueError("The attempt directory must be separate from the frozen release")
+    return resolved
 
 
 class Journal:
     """One fresh private attempt directory; flush intent and run identity before proceeding."""
 
     def __init__(self, output: Path, release: Path) -> None:
-        output, release = output.resolve(), release.resolve()
-        if output.exists() or not output.is_relative_to(ROOT / "artifacts"):
-            raise ValueError("Use a fresh attempt directory under the project's ignored artifacts")
-        if output.is_relative_to(release) or release.is_relative_to(output):
-            raise ValueError("The attempt directory must be separate from the frozen release")
+        output = trial_output(output, release)
         output.mkdir(parents=True)
         self.output = output
         self.record({"event": "attempt_created"})
@@ -216,6 +233,7 @@ def execute_trial(
     *,
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
+    before_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """One submission, bounded observations and best-effort confirmed stop of only its run."""
     name = plan["job"]["Name"]
@@ -235,6 +253,8 @@ def execute_trial(
     )
     verified = preflight(glue, s3, plan)
     record({"event": "preflight_complete", **verified})
+    if before_start is not None:
+        before_start()
     record({"event": "start_intent", "request": request})
     started = now()
     try:
