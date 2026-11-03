@@ -22,7 +22,7 @@ CALLER = {
 
 
 def fake_table(plan: dict[str, Any]) -> dict[str, Any]:
-    location = "s3://urban-geo-test-lake-123456789012-eu-west-1/warehouse/building_proximity"
+    location = "s3://urban-geo-test-lake-123456789012-eu-north-1/warehouse/building_proximity"
     return {
         "Table": {
             "CatalogId": "123456789012",
@@ -80,7 +80,7 @@ def check(output: Path) -> dict[str, Any]:
         aws_access_key_id="offline-testing",
         aws_secret_access_key="offline-testing",
         aws_session_token="offline-token",
-        region_name="eu-west-1",
+        region_name="eu-north-1",
     )
     outcomes = {}
     with ExitStack() as patches:
@@ -103,7 +103,7 @@ def check(output: Path) -> dict[str, Any]:
                 credentials = clients["athena"]._request_signer._credentials
                 for service, client in clients.items():
                     assert client._request_signer._credentials is credentials
-                    assert client.meta.endpoint_url == f"https://{service}.eu-west-1.amazonaws.com"
+                    assert client.meta.endpoint_url == f"https://{service}.eu-north-1.amazonaws.com"
                     assert client.meta.config.retries["total_max_attempts"] == 1
                     assert (
                         client.meta.config.connect_timeout == 5

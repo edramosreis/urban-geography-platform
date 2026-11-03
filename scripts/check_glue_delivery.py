@@ -31,7 +31,7 @@ def main() -> None:
     from botocore.stub import Stubber
 
     session = boto3.Session(
-        aws_access_key_id="testing", aws_secret_access_key="testing", region_name="eu-west-1"
+        aws_access_key_id="testing", aws_secret_access_key="testing", region_name="eu-north-1"
     )
     client = create_input_client(session=session)
     bodies = []

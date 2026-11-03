@@ -15,6 +15,7 @@ from athena_plan_fixtures import OPTIONS, workgroup
         ("deployment_name", "unsafe;sql"),
         ("account_id", "wrong"),
         ("region", "us-east-1"),
+        ("region", "eu-west-1"),
         ("snapshot_id", True),
         ("source_run_sha256", "a" * 63 + "'"),
         ("max_query_scan_bytes", True),
@@ -136,6 +137,8 @@ def test_disabled_drifted_or_unbounded_workgroup_is_rejected(path, value):
     client.start_query_execution.assert_not_called()
 
 
-def test_sdk_factory_rejects_wrong_region_before_loading_packages():
-    with pytest.raises(ValueError, match="eu-west-1"):
-        athena.create_athena_client(region="us-east-1")
+@pytest.mark.parametrize("region", ["us-east-1", "eu-west-1"])
+def test_sdk_factory_rejects_wrong_region_before_loading_packages(monkeypatch, region):
+    monkeypatch.setattr(athena, "tooling_sdk_pins", lambda: pytest.fail("No SDK resolution"))
+    with pytest.raises(ValueError, match="eu-north-1"):
+        athena.create_athena_client(region=region)

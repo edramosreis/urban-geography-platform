@@ -36,7 +36,7 @@ def make_frozen(history_run_factory, tmp_path, monkeypatch):
         target={
             "deployment_name": "urban-geo-test",
             "account_id": "123456789012",
-            "region": "eu-west-1",
+            "region": "eu-north-1",
         },
         output=tmp_path / "release",
     )

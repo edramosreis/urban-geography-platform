@@ -90,12 +90,12 @@ def check_plan(terraform_contract: Path, output: Path) -> dict[str, Any]:
     session = boto3.Session(
         aws_access_key_id="offline-testing",
         aws_secret_access_key="offline-testing",
-        region_name="eu-west-1",
+        region_name="eu-north-1",
     )
     with patch.dict(os.environ, {"AWS_ENDPOINT_URL_ATHENA": "https://example.invalid"}):
         client = create_athena_client(session=session)
     try:
-        assert client.meta.endpoint_url == "https://athena.eu-west-1.amazonaws.com"
+        assert client.meta.endpoint_url == "https://athena.eu-north-1.amazonaws.com"
         assert client.meta.config.retries["total_max_attempts"] == 1
         assert client.meta.config.connect_timeout == 5 and client.meta.config.read_timeout == 10
         assert (

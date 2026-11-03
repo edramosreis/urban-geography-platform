@@ -77,7 +77,7 @@ def check(output: Path) -> dict[str, Any]:
     session = boto3.Session(
         aws_access_key_id="offline-testing",
         aws_secret_access_key="offline-testing",
-        region_name="eu-west-1",
+        region_name="eu-north-1",
     )
     client = create_athena_client(session=session)
     results = {}

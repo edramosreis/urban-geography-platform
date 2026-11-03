@@ -227,7 +227,7 @@ def check_views(project: Path, output: Path, scenario: str) -> dict[str, Any]:
         "AWS_SECRET_ACCESS_KEY": "offline-testing",
         "AWS_SESSION_TOKEN": "offline-testing",
         "AWS_EC2_METADATA_DISABLED": "true",
-        "AWS_DEFAULT_REGION": "eu-west-1",
+        "AWS_DEFAULT_REGION": "eu-north-1",
         "AWS_CONFIG_FILE": os.devnull,
         "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
         "DBT_SEND_ANONYMOUS_USAGE_STATS": "false",

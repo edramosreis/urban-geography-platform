@@ -35,7 +35,7 @@ def run_s3_writer(
     scratch_root: Path,
     client_factory: Callable[[], Any],
     write: Callable[[Path], dict[str, Any]],
-    region: str = "eu-west-1",
+    region: str = "eu-north-1",
 ) -> dict[str, Any]:
     """Download/verify, close the client, invoke the writer and remove owned scratch."""
     scratch_root = scratch_root.resolve()

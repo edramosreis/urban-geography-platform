@@ -24,10 +24,10 @@ def modules(monkeypatch):
 
 def test_factory_uses_explicit_region_tls_timeouts_and_no_retries(modules):
     result = sdk.create_input_client()
-    modules.boto.Session.assert_called_once_with(region_name="eu-west-1")
+    modules.boto.Session.assert_called_once_with(region_name="eu-north-1")
     args, options = modules.session.client.call_args
     assert args == ("s3",)
-    assert options["region_name"] == "eu-west-1" and options["use_ssl"] and options["verify"]
+    assert options["region_name"] == "eu-north-1" and options["use_ssl"] and options["verify"]
     config = options["config"]
     assert config.connect_timeout == 5 and config.read_timeout == 10
     assert config.retries == {"mode": "standard", "total_max_attempts": 1}
@@ -44,10 +44,11 @@ def test_factory_accepts_a_supplied_sdk_session_for_offline_contract_checks(modu
     other.client.assert_called_once()
 
 
-def test_bad_region_never_imports_or_creates_an_sdk_client(monkeypatch):
+@pytest.mark.parametrize("region", ["us-east-1", "eu-west-1"])
+def test_bad_region_never_imports_or_creates_an_sdk_client(monkeypatch, region):
     monkeypatch.setattr(sdk, "version", lambda *a: pytest.fail("No SDK resolution"))
     with pytest.raises(ValueError, match="scoped"):
-        sdk.create_input_client(region="us-east-1")
+        sdk.create_input_client(region=region)
 
 
 @pytest.mark.parametrize("package", ["boto3", "botocore"])

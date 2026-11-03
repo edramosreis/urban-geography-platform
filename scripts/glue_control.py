@@ -116,10 +116,10 @@ def preflight(glue: GlueClient, s3: S3InputClient, plan: dict[str, Any]) -> dict
     }
 
 
-def create_glue_client(*, region: str = "eu-west-1", session: Any = None) -> Any:
+def create_glue_client(*, region: str = "eu-north-1", session: Any = None) -> Any:
     """Lazy optional managed SDK, fixed region/TLS and one total request attempt."""
-    if region != "eu-west-1":
-        raise ValueError("Glue control is scoped to eu-west-1")
+    if region != "eu-north-1":
+        raise ValueError("Glue control is scoped to eu-north-1")
     try:
         for name, pin in SDK_PINS.items():
             if version(name) != pin:

@@ -15,7 +15,7 @@ def main() -> None:
     parser.add_argument("--jar", type=Path, action="append", required=True)
     parser.add_argument("--deployment-name", required=True)
     parser.add_argument("--account-id", required=True)
-    parser.add_argument("--region", default="eu-west-1")
+    parser.add_argument("--region", default="eu-north-1")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = freeze_release(

@@ -56,7 +56,7 @@ def check_compiled_models(manifest: dict[str, Any], binding: dict[str, Any]) -> 
 
 
 def view_build_plan(
-    project: Path, *, deployment_name: str, account_id: str, region: str = "eu-west-1"
+    project: Path, *, deployment_name: str, account_id: str, region: str = "eu-north-1"
 ) -> dict[str, Any]:
     receipt = verify_project(project)
     plan = read_plan(

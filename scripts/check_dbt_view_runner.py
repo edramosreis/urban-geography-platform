@@ -196,7 +196,7 @@ def check(
         "AWS_SECRET_ACCESS_KEY": "offline-testing",
         "AWS_SESSION_TOKEN": "offline-testing",
         "AWS_EC2_METADATA_DISABLED": "true",
-        "AWS_DEFAULT_REGION": "eu-west-1",
+        "AWS_DEFAULT_REGION": "eu-north-1",
         "AWS_CONFIG_FILE": os.devnull,
         "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
         "DBT_SEND_ANONYMOUS_USAGE_STATS": "false",
@@ -579,7 +579,7 @@ def check(
                 "socket.getaddrinfo",
             ):
                 watches.enter_context(patch(name, side_effect=denied))
-            session = boto3.Session(region_name="eu-west-1")
+            session = boto3.Session(region_name="eu-north-1")
             error_type = None
             report: dict[str, Any] | None = None
             try:

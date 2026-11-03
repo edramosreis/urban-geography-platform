@@ -3,8 +3,8 @@ variable "aws_region" {
   type        = string
 
   validation {
-    condition     = var.aws_region == "eu-west-1"
-    error_message = "This first demonstration is scoped to eu-west-1; another region needs review."
+    condition     = var.aws_region == "eu-north-1"
+    error_message = "This first demonstration is scoped to eu-north-1; another region needs review."
   }
 }
 

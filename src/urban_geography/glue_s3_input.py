@@ -99,7 +99,7 @@ def download_prepared_input(
     expected_summary_sha256: str,
     expected_manifest_sha256: str,
     output: Path,
-    region: str = "eu-west-1",
+    region: str = "eu-north-1",
 ) -> dict[str, Any]:
     """Reconstruct one prepared input using exact keys, bounded GETs and verified bytes."""
     output = output.resolve()

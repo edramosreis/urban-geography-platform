@@ -452,8 +452,9 @@ no infrastructure. Mock tests verify configuration, not live AWS permissions or
 Spark/Athena compatibility. The normal pipeline Docker image does not include
 Terraform.
 
-The proposed region is eu-west-1. Actual deployment still needs a reviewed target
-account, regional cost estimate, execution limits and teardown procedure.
+The pilot region is eu-north-1 (Stockholm). Actual deployment still needs a
+reviewed target account, regional cost estimate, execution limits and teardown
+procedure. Earlier Ireland releases must be rebuilt and frozen for the new target.
 This increment defines no Glue processing job, table registration or dbt models.
 
 ### Prepare the proposed Glue runtime
@@ -581,7 +582,7 @@ the writer obtains its Spark session. The S3 client closes before publication;
 the owned input folder is removed after success or failure.
 
 The optional managed-client factory requires the Glue 5.1 provided boto3 and
-botocore 1.40.61. It fixes eu-west-1, TLS verification, SigV4, virtual addressing,
+botocore 1.40.61. It fixes eu-north-1, TLS verification, SigV4, virtual addressing,
 5-second connect and 10-second read timeouts, one connection slot and one total
 request attempt. Configured endpoint URL overrides are ignored. These socket/
 attempt settings do not replace an overall job timeout or spending limits.

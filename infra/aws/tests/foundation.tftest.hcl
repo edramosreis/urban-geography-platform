@@ -2,7 +2,7 @@
 mock_provider "aws" {}
 
 variables {
-  aws_region      = "eu-west-1"
+  aws_region      = "eu-north-1"
   aws_account_id  = "123456789012"
   deployment_name = "urban-geo-test"
 }
@@ -73,8 +73,8 @@ run "bounded_disabled_workgroup" {
     condition = (
       one(one(aws_athena_workgroup.analytics.configuration).result_configuration).expected_bucket_owner == var.aws_account_id &&
       one(one(one(aws_athena_workgroup.analytics.configuration).result_configuration).encryption_configuration).encryption_option == "SSE_S3" &&
-      output.query_results_uri == "s3://urban-geo-test-results-123456789012-eu-west-1/queries/" &&
-      output.warehouse_uri == "s3://urban-geo-test-lake-123456789012-eu-west-1/warehouse/" &&
+      output.query_results_uri == "s3://urban-geo-test-results-123456789012-eu-north-1/queries/" &&
+      output.warehouse_uri == "s3://urban-geo-test-lake-123456789012-eu-north-1/warehouse/" &&
       aws_glue_catalog_database.analytics.catalog_id == var.aws_account_id
     )
     error_message = "Query results and table data must use separate, account-scoped locations."
@@ -98,6 +98,12 @@ run "results_only_expiration" {
 run "reject_wrong_region" {
   command = plan
   variables { aws_region = "us-east-1" }
+  expect_failures = [var.aws_region]
+}
+
+run "reject_previous_ireland_region" {
+  command = plan
+  variables { aws_region = "eu-west-1" }
   expect_failures = [var.aws_region]
 }
 

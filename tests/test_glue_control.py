@@ -112,7 +112,7 @@ def test_glue_client_uses_explicit_tls_endpoint_and_single_attempt_policy(monkey
     )
     assert control.create_glue_client(session=session) == "client"
     args, options = session.client.call_args
-    assert args == ("glue",) and options["region_name"] == "eu-west-1"
+    assert args == ("glue",) and options["region_name"] == "eu-north-1"
     assert options["verify"] and options["use_ssl"]
     config = options["config"]
     assert config.signature_version == "v4" and config.max_pool_connections == 1
@@ -125,7 +125,8 @@ def test_glue_client_uses_explicit_tls_endpoint_and_single_attempt_policy(monkey
     )
 
 
-def test_bad_control_region_is_rejected_before_sdk_resolution(monkeypatch):
+@pytest.mark.parametrize("region", ["us-east-1", "eu-west-1"])
+def test_bad_control_region_is_rejected_before_sdk_resolution(monkeypatch, region):
     monkeypatch.setattr(control, "version", lambda name: pytest.fail("No SDK resolution"))
     with pytest.raises(ValueError, match="scoped"):
-        control.create_glue_client(region="us-east-1")
+        control.create_glue_client(region=region)

@@ -29,15 +29,15 @@ JARS = [
 
 
 def runtime_plan(
-    *, deployment_name: str, account_id: str, region: str = "eu-west-1"
+    *, deployment_name: str, account_id: str, region: str = "eu-north-1"
 ) -> dict[str, Any]:
     """Use the reviewed Terraform naming contract; values cannot inject Spark options."""
     if not re.fullmatch(r"[a-z][a-z0-9-]{2,18}[a-z0-9]", deployment_name):
         raise ValueError("deployment_name must contain 4..20 safe lowercase characters")
     if not re.fullmatch(r"[0-9]{12}", account_id):
         raise ValueError("account_id must be a 12-digit AWS account ID")
-    if region != "eu-west-1":
-        raise ValueError("This proposed runtime is scoped to eu-west-1")
+    if region != "eu-north-1":
+        raise ValueError("This proposed runtime is scoped to eu-north-1")
     bucket = f"{deployment_name}-lake-{account_id}-{region}"
     warehouse = f"s3://{bucket}/warehouse/"
     prefix = "spark.sql.catalog.glue_catalog"

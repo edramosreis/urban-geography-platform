@@ -7,7 +7,7 @@ mock_provider "aws" {
 }
 
 variables {
-  aws_region            = "eu-west-1"
+  aws_region            = "eu-north-1"
   aws_account_id        = "123456789012"
   deployment_name       = "urban-geo-test"
   glue_job_release_json = file("../../tests/fixtures/glue_job_release.json")
@@ -52,7 +52,7 @@ run "release_and_operational_arguments_cannot_be_overridden" {
         "--enable-auto-scaling"     = "false"
         "--custom-logGroup-prefix"  = "/urban-geography/urban-geo-test/glue"
         "--custom-logStream-prefix" = "urban-geo-test-pilot"
-        "--TempDir"                 = "s3://urban-geo-test-lake-123456789012-eu-west-1/scratch/glue/${var.glue_release.release_id}/"
+        "--TempDir"                 = "s3://urban-geo-test-lake-123456789012-eu-north-1/scratch/glue/${var.glue_release.release_id}/"
       }))
     )
     error_message = "All frozen software/input arguments, script override and operational settings must be non-overridable."
@@ -64,12 +64,12 @@ run "scratch_is_separate_and_release_scoped" {
   assert {
     condition = (
       length(jsondecode(aws_iam_role_policy.glue_writer[0].policy).Statement) == 9 &&
-      jsondecode(aws_iam_role_policy.glue_writer[0].policy).Statement[7].Resource == "arn:aws:s3:::urban-geo-test-lake-123456789012-eu-west-1/scratch/glue/${var.glue_release.release_id}/*" &&
+      jsondecode(aws_iam_role_policy.glue_writer[0].policy).Statement[7].Resource == "arn:aws:s3:::urban-geo-test-lake-123456789012-eu-north-1/scratch/glue/${var.glue_release.release_id}/*" &&
       toset(jsondecode(aws_iam_role_policy.glue_writer[0].policy).Statement[7].Action) == toset(["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]) &&
       toset(jsondecode(aws_iam_role_policy.glue_writer[0].policy).Statement[8].Condition.StringLike["s3:prefix"]) == toset([
         "scratch/glue/${var.glue_release.release_id}", "scratch/glue/${var.glue_release.release_id}/*"
       ]) &&
-      output.glue_job_scratch_uri == "s3://urban-geo-test-lake-123456789012-eu-west-1/scratch/glue/${var.glue_release.release_id}/"
+      output.glue_job_scratch_uri == "s3://urban-geo-test-lake-123456789012-eu-north-1/scratch/glue/${var.glue_release.release_id}/"
     )
     error_message = "Temporary files must have separate release-scoped storage and permissions."
   }
@@ -84,7 +84,7 @@ run "deployment_policy_has_exact_job_and_passrole" {
         "glue:GetTags", "glue:TagResource", "glue:UntagResource",
         "glue:GetJobRun", "glue:GetJobRuns", "glue:BatchStopJobRun"
       ]) &&
-      jsondecode(aws_iam_policy.glue_job_deployment[0].policy).Statement[0].Resource == "arn:aws:glue:eu-west-1:123456789012:job/urban-geo-test-pilot-writer" &&
+      jsondecode(aws_iam_policy.glue_job_deployment[0].policy).Statement[0].Resource == "arn:aws:glue:eu-north-1:123456789012:job/urban-geo-test-pilot-writer" &&
       jsondecode(aws_iam_policy.glue_job_deployment[0].policy).Statement[1].Action == "iam:PassRole" &&
       jsondecode(aws_iam_policy.glue_job_deployment[0].policy).Statement[1].Resource == "arn:aws:iam::123456789012:role/service-role/urban-geo-test-glue-writer" &&
       jsondecode(aws_iam_policy.glue_job_deployment[0].policy).Statement[1].Condition.StringEquals["iam:PassedToService"] == "glue.amazonaws.com" &&
@@ -146,8 +146,8 @@ run "reject_byte_drift" {
 run "reject_wrong_target" {
   command = plan
   variables {
-    glue_job_release_json = jsonencode(merge(jsondecode(var.glue_job_release_json), { identity = merge(jsondecode(var.glue_job_release_json).identity, { target = { deployment_name = "urban-geo-test", account_id = "999999999999", region = "eu-west-1" } }) }))
-    glue_release          = merge(var.glue_release, { manifest_sha256 = sha256(jsonencode(merge(jsondecode(var.glue_job_release_json), { identity = merge(jsondecode(var.glue_job_release_json).identity, { target = { deployment_name = "urban-geo-test", account_id = "999999999999", region = "eu-west-1" } }) }))) })
+    glue_job_release_json = jsonencode(merge(jsondecode(var.glue_job_release_json), { identity = merge(jsondecode(var.glue_job_release_json).identity, { target = { deployment_name = "urban-geo-test", account_id = "999999999999", region = "eu-north-1" } }) }))
+    glue_release          = merge(var.glue_release, { manifest_sha256 = sha256(jsonencode(merge(jsondecode(var.glue_job_release_json), { identity = merge(jsondecode(var.glue_job_release_json).identity, { target = { deployment_name = "urban-geo-test", account_id = "999999999999", region = "eu-north-1" } }) }))) })
   }
   expect_failures = [aws_glue_job.pilot[0]]
 }

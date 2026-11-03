@@ -76,7 +76,7 @@ def main() -> None:
     from botocore.stub import Stubber
 
     session = boto3.Session(
-        aws_access_key_id="testing", aws_secret_access_key="testing", region_name="eu-west-1"
+        aws_access_key_id="testing", aws_secret_access_key="testing", region_name="eu-north-1"
     )
     previous = os.environ.get("AWS_ENDPOINT_URL_GLUE")
     os.environ["AWS_ENDPOINT_URL_GLUE"] = "https://example.invalid"
@@ -91,7 +91,7 @@ def main() -> None:
     results = {}
     bodies = []
     try:
-        assert glue.meta.endpoint_url == "https://glue.eu-west-1.amazonaws.com"
+        assert glue.meta.endpoint_url == "https://glue.eu-north-1.amazonaws.com"
         assert glue.meta.config.retries["total_max_attempts"] == 1
         assert glue.meta.config.signature_version == "v4"
         assert glue.meta.config.connect_timeout == 5 and glue.meta.config.read_timeout == 10

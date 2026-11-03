@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_startup_recipe_agrees_with_foundation_and_local_runtime_pins():
     plan = runtime_plan(deployment_name="urban-geo-test", account_id="123456789012")
-    assert plan["warehouse"] == "s3://urban-geo-test-lake-123456789012-eu-west-1/warehouse/"
+    assert plan["warehouse"] == "s3://urban-geo-test-lake-123456789012-eu-north-1/warehouse/"
     assert plan["database"] == "urban_geo_test_m4"
     assert plan["glue_version"] == "5.1"
     spec = importlib.util.spec_from_file_location("fetch_jars", ROOT / "scripts/fetch_jars.py")
@@ -36,7 +36,7 @@ def test_startup_recipe_agrees_with_foundation_and_local_runtime_pins():
     assert reconstructed == plan["spark_settings"]
     prefix = "spark.sql.catalog.glue_catalog"
     assert reconstructed[prefix + ".glue.id"] == "123456789012"
-    assert reconstructed[prefix + ".client.region"] == "eu-west-1"
+    assert reconstructed[prefix + ".client.region"] == "eu-north-1"
     assert reconstructed[prefix + ".s3.sse.type"] == "s3"
     assert reconstructed[prefix + ".table-override.format-version"] == "2"
     assert "spark.master" not in reconstructed
@@ -52,6 +52,7 @@ def test_startup_recipe_agrees_with_foundation_and_local_runtime_pins():
         {"account_id": "not-an-account"},
         {"account_id": "123456789012 --conf x=y"},
         {"region": "us-east-1"},
+        {"region": "eu-west-1"},
     ],
 )
 def test_bad_targets_fail_before_configuration_is_rendered(changes):

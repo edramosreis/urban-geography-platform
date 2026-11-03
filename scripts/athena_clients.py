@@ -27,7 +27,7 @@ def query_resources(
         if version(name) != pin:
             raise ValueError("Use the isolated analytics/athena tooling environment")
     boto3 = import_module("boto3")
-    selected = boto3.Session(region_name="eu-west-1") if session is None else session
+    selected = boto3.Session(region_name="eu-north-1") if session is None else session
     credentials = selected.get_credentials()
     if credentials is None:
         raise ValueError("No credentials are available for the explicitly expected caller")
@@ -37,7 +37,7 @@ def query_resources(
         aws_access_key_id=frozen.access_key,
         aws_secret_access_key=frozen.secret_key,
         aws_session_token=frozen.token,
-        region_name="eu-west-1",
+        region_name="eu-north-1",
     )
     reader_environment = {
         "AWS_ACCESS_KEY_ID": frozen.access_key,
@@ -53,10 +53,10 @@ def query_resources(
             for service in ("sts", "glue"):
                 client = fixed.client(
                     service,
-                    region_name="eu-west-1",
+                    region_name="eu-north-1",
                     use_ssl=True,
                     verify=True,
-                    endpoint_url=f"https://{service}.eu-west-1.amazonaws.com",
+                    endpoint_url=f"https://{service}.eu-north-1.amazonaws.com",
                     config=athena.meta.config,
                 )
                 owned.callback(client.close)
@@ -68,10 +68,10 @@ def query_resources(
                 )
                 s3 = fixed.client(
                     "s3",
-                    region_name="eu-west-1",
+                    region_name="eu-north-1",
                     use_ssl=True,
                     verify=True,
-                    endpoint_url="https://s3.eu-west-1.amazonaws.com",
+                    endpoint_url="https://s3.eu-north-1.amazonaws.com",
                     config=config,
                 )
                 owned.callback(s3.close)

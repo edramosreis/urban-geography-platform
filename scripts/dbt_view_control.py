@@ -134,7 +134,7 @@ class ViewController:
         *,
         deployment_name: str,
         account_id: str,
-        region: str = "eu-west-1",
+        region: str = "eu-north-1",
         now: Callable[[], float] = time.monotonic,
         pause: Callable[[float], None] = time.sleep,
         before_submit: Callable[[], None] | None = None,

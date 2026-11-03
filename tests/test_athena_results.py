@@ -150,7 +150,7 @@ def test_result_is_bound_to_saved_query_and_exact_owned_s3_object(download):
     assert result["caller_identity_verified"] is result["source_readback_verified"] is False
     assert result["data_scanned_bytes"] == 4096
     target = {
-        "Bucket": "urban-geo-test-results-123456789012-eu-west-1",
+        "Bucket": "urban-geo-test-results-123456789012-eu-north-1",
         "Key": "queries/query-001.csv",
         "ExpectedBucketOwner": "123456789012",
     }

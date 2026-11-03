@@ -64,7 +64,7 @@ def check(summary: Path, pin: str, output: Path) -> dict[str, Any]:
         aws_access_key_id="offline-testing",
         aws_secret_access_key="offline-testing",
         aws_session_token="offline-token",
-        region_name="eu-west-1",
+        region_name="eu-north-1",
     )
     scenarios: dict[str, Any] = {}
     plan_example = {}

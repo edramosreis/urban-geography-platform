@@ -53,7 +53,7 @@ def check(
         aws_access_key_id="offline-testing",
         aws_secret_access_key="offline-testing",
         aws_session_token="offline-token",
-        region_name="eu-west-1",
+        region_name="eu-north-1",
     )
     scenarios = {}
     with ExitStack() as watches:
@@ -70,7 +70,7 @@ def check(
                 credentials = clients["athena"]._request_signer._credentials
                 assert all(c._request_signer._credentials is credentials for c in clients.values())
                 s3 = clients["s3"]
-                assert s3.meta.endpoint_url == "https://s3.eu-west-1.amazonaws.com"
+                assert s3.meta.endpoint_url == "https://s3.eu-north-1.amazonaws.com"
                 assert (
                     s3.meta.config.signature_version == "s3v4"
                     and s3.meta.config.s3["addressing_style"] == "virtual"
@@ -121,7 +121,7 @@ def check(
                             before["QueryExecution"]["Query"] = "SELECT 1"
                         athena.add_response("get_query_execution", before, owned)
                         target = {
-                            "Bucket": "urban-geo-test-results-123456789012-eu-west-1",
+                            "Bucket": "urban-geo-test-results-123456789012-eu-north-1",
                             "Key": "queries/query-001.csv",
                             "ExpectedBucketOwner": "123456789012",
                         }

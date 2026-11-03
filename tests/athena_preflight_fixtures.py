@@ -23,7 +23,7 @@ CALLER = {
 
 
 def synthetic_table(plan):
-    location = "s3://urban-geo-test-lake-123456789012-eu-west-1/warehouse/building_proximity"
+    location = "s3://urban-geo-test-lake-123456789012-eu-north-1/warehouse/building_proximity"
     return {
         "Table": {
             "CatalogId": "123456789012",

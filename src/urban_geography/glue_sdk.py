@@ -7,10 +7,10 @@ from typing import Any
 SDK_PINS = {"boto3": "1.40.61", "botocore": "1.40.61"}
 
 
-def create_input_client(*, region: str = "eu-west-1", session: Any = None) -> Any:
+def create_input_client(*, region: str = "eu-north-1", session: Any = None) -> Any:
     """Use the managed SDK; import nothing optional until this factory is called."""
-    if region != "eu-west-1":
-        raise ValueError("The input SDK client is scoped to eu-west-1")
+    if region != "eu-north-1":
+        raise ValueError("The input SDK client is scoped to eu-north-1")
     try:
         for name, pin in SDK_PINS.items():
             if version(name) != pin:

@@ -17,7 +17,7 @@ def test_export_matches_the_verified_delivery_inventory(frozen):
     result = PREPARE(frozen.path, frozen.pin, output)
     assert json.loads(output.read_text()) == result
     assert result["deployment_name"] == "urban-geo-test"
-    assert result["aws_account_id"] == "123456789012" and result["aws_region"] == "eu-west-1"
+    assert result["aws_account_id"] == "123456789012" and result["aws_region"] == "eu-north-1"
     descriptor = result["glue_release"]
     assert descriptor["manifest_sha256"] == frozen.pin
     assert descriptor["release_id"] == frozen.manifest["release_id"]

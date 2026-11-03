@@ -129,3 +129,11 @@ def test_copy_failure_leaves_no_completed_or_staging_release(frozen, monkeypatch
     with pytest.raises(ValueError):
         release.freeze_release(**(frozen.options | {"output": output}))
     assert not output.exists() and not list(output.parent.glob(".release-*"))
+
+
+def test_previous_region_manifest_is_rejected_even_with_matching_checksum(frozen):
+    manifest = copy.deepcopy(frozen.manifest)
+    manifest["identity"]["target"]["region"] = "eu-west-1"
+    pin = repin(frozen, manifest)
+    with pytest.raises(ValueError, match="scoped to eu-north-1"):
+        release.load_release(frozen.path, pin)

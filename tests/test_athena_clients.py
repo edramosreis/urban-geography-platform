@@ -36,16 +36,16 @@ def test_clients_share_frozen_identity_and_policy_and_close_without_logging_secr
             aws_access_key_id="offline-testing",
             aws_secret_access_key="offline-testing",
             aws_session_token="offline-token",
-            region_name="eu-west-1",
+            region_name="eu-north-1",
         )
         clients.create_athena_client.assert_called_once_with(session=fixed)
         for call, service in zip(fixed.client.call_args_list, ("sts", "glue"), strict=True):
             assert call.args == (service,)
             assert call.kwargs == {
-                "region_name": "eu-west-1",
+                "region_name": "eu-north-1",
                 "use_ssl": True,
                 "verify": True,
-                "endpoint_url": f"https://{service}.eu-west-1.amazonaws.com",
+                "endpoint_url": f"https://{service}.eu-north-1.amazonaws.com",
                 "config": athena.meta.config,
             }
         for client in opened.values():
@@ -116,10 +116,10 @@ def test_optional_result_client_shares_credentials_and_uses_s3_policy(case, monk
         athena.meta.config.merge.assert_called_once_with("s3-overrides")
         fixed.client.assert_called_with(
             "s3",
-            region_name="eu-west-1",
+            region_name="eu-north-1",
             use_ssl=True,
             verify=True,
-            endpoint_url="https://s3.eu-west-1.amazonaws.com",
+            endpoint_url="https://s3.eu-north-1.amazonaws.com",
             config=athena.meta.config.merge.return_value,
         )
     for client in (athena, sts, glue, s3):

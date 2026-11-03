@@ -29,7 +29,7 @@ def main() -> None:
     from botocore.stub import Stubber
 
     session = boto3.Session(
-        aws_access_key_id="testing", aws_secret_access_key="testing", region_name="eu-west-1"
+        aws_access_key_id="testing", aws_secret_access_key="testing", region_name="eu-north-1"
     )
     old_endpoint = os.environ.get("AWS_ENDPOINT_URL_S3")
     os.environ["AWS_ENDPOINT_URL_S3"] = "https://example.invalid"
@@ -42,7 +42,7 @@ def main() -> None:
             os.environ["AWS_ENDPOINT_URL_S3"] = old_endpoint
     streams = []
     try:
-        assert client.meta.endpoint_url == "https://s3.eu-west-1.amazonaws.com"
+        assert client.meta.endpoint_url == "https://s3.eu-north-1.amazonaws.com"
         config = client.meta.config
         assert config.connect_timeout == 5 and config.read_timeout == 10
         assert config.retries["total_max_attempts"] == 1
@@ -50,7 +50,7 @@ def main() -> None:
         # The endpoint option is consumed during construction; verify its resolved effect above.
         assert config.s3["addressing_style"] == "virtual"
         prefix = "inputs/" + args.summary_sha256 + "/"
-        bucket = "urban-geo-test-lake-123456789012-eu-west-1"
+        bucket = "urban-geo-test-lake-123456789012-eu-north-1"
         manifest = args.input / "input-manifest.json"
         files = [("input-manifest.json", MAX_SUMMARY_BYTES)] + [
             (name, item["bytes"]) for name, item in sorted(prepared.files.items())

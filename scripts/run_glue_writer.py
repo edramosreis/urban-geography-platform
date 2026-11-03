@@ -16,7 +16,7 @@ def main() -> None:
     parser.add_argument("--summary-sha256", required=True)
     parser.add_argument("--deployment-name", required=True)
     parser.add_argument("--account-id", required=True)
-    parser.add_argument("--region", default="eu-west-1")
+    parser.add_argument("--region", default="eu-north-1")
     parser.add_argument("--table-name", default="building_proximity")
     # Glue supplies platform arguments alongside the writer arguments.
     args, _ = parser.parse_known_args()

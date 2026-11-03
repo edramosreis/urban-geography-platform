@@ -64,7 +64,7 @@ class ModelExecutor:
             "AWS_EC2_METADATA_DISABLED": "true",
             "AWS_CONFIG_FILE": "/dev/null",
             "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
-            "AWS_DEFAULT_REGION": "eu-west-1",
+            "AWS_DEFAULT_REGION": "eu-north-1",
             "DBT_SEND_ANONYMOUS_USAGE_STATS": "false",
             "DO_NOT_TRACK": "1",
         }

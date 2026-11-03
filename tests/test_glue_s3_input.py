@@ -55,7 +55,7 @@ def test_exact_transfer_is_readable_and_closes_short_streams(case):
     }
     assert all(body.closed for body in case.client.bodies)
     for request in case.client.requests:
-        assert request["Bucket"] == "urban-geo-test-lake-123456789012-eu-west-1"
+        assert request["Bucket"] == "urban-geo-test-lake-123456789012-eu-north-1"
         assert request["ExpectedBucketOwner"] == "123456789012"
         assert request["Key"].startswith(case.client.prefix)
         assert request["Range"].startswith("bytes=0-")

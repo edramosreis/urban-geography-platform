@@ -75,7 +75,7 @@ def check(
         aws_access_key_id="offline-testing",
         aws_secret_access_key="offline-testing",
         aws_session_token="offline-token",
-        region_name="eu-west-1",
+        region_name="eu-north-1",
     )
     outcomes = {}
     with ExitStack() as watches:
@@ -168,7 +168,7 @@ def check(
                                 "get_query_execution", fake_execution(request, "SUCCEEDED"), owned
                             )
                             object_target = {
-                                "Bucket": "urban-geo-test-results-123456789012-eu-west-1",
+                                "Bucket": "urban-geo-test-results-123456789012-eu-north-1",
                                 "Key": "queries/query-001.csv",
                                 "ExpectedBucketOwner": "123456789012",
                             }

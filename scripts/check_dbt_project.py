@@ -40,7 +40,7 @@ def check_project(project: Path, output: Path) -> dict[str, Any]:
                     "type": "athena",
                     "database": "awsdatacatalog",
                     "schema": "offline_only",
-                    "region_name": "eu-west-1",
+                    "region_name": "eu-north-1",
                     "threads": 1,
                     "num_retries": 0,
                     "s3_staging_dir": "s3://dbt-offline-placeholder/queries/",

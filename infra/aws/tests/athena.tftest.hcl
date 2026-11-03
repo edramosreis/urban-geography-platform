@@ -2,7 +2,7 @@
 mock_provider "aws" {}
 
 variables {
-  aws_region      = "eu-west-1"
+  aws_region      = "eu-north-1"
   aws_account_id  = "123456789012"
   deployment_name = "urban-geo-test"
 }
@@ -32,7 +32,7 @@ run "scoped_reader_policy" {
   }
   assert {
     condition = (
-      local.athena_reader_policy.Statement[0].Resource == "arn:aws:athena:eu-west-1:123456789012:workgroup/urban-geo-test-m4" &&
+      local.athena_reader_policy.Statement[0].Resource == "arn:aws:athena:eu-north-1:123456789012:workgroup/urban-geo-test-m4" &&
       toset(local.athena_reader_policy.Statement[0].Action) == toset(["athena:GetWorkGroup", "athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution"]) &&
       alltrue([for s in local.athena_reader_policy.Statement : !contains(try(tolist(s.Resource), [s.Resource]), "*")])
     )
@@ -43,20 +43,20 @@ run "scoped_reader_policy" {
       local.athena_reader_policy.Statement[1].Action == "glue:GetDatabase" &&
       local.athena_reader_policy.Statement[2].Action == "glue:GetTable" &&
       toset(local.athena_reader_policy.Statement[2].Resource) == toset([
-        "arn:aws:glue:eu-west-1:123456789012:catalog",
-        "arn:aws:glue:eu-west-1:123456789012:database/urban_geo_test_m4",
-        "arn:aws:glue:eu-west-1:123456789012:table/urban_geo_test_m4/building_proximity"
+        "arn:aws:glue:eu-north-1:123456789012:catalog",
+        "arn:aws:glue:eu-north-1:123456789012:database/urban_geo_test_m4",
+        "arn:aws:glue:eu-north-1:123456789012:table/urban_geo_test_m4/building_proximity"
       ]) &&
       local.athena_reader_policy.Statement[4].Condition.StringLike["s3:prefix"] == ["warehouse/building_proximity", "warehouse/building_proximity/*"] &&
       local.athena_reader_policy.Statement[5].Action == "s3:GetObject" &&
-      local.athena_reader_policy.Statement[5].Resource == "arn:aws:s3:::urban-geo-test-lake-123456789012-eu-west-1/warehouse/building_proximity/*"
+      local.athena_reader_policy.Statement[5].Resource == "arn:aws:s3:::urban-geo-test-lake-123456789012-eu-north-1/warehouse/building_proximity/*"
     )
     error_message = "Catalog and source reads must be confined to the pilot fact table."
   }
   assert {
     condition = (
       local.athena_reader_policy.Statement[6].Condition.StringLike["s3:prefix"] == ["queries", "queries/*"] &&
-      local.athena_reader_policy.Statement[7].Resource == "arn:aws:s3:::urban-geo-test-results-123456789012-eu-west-1/queries/*" &&
+      local.athena_reader_policy.Statement[7].Resource == "arn:aws:s3:::urban-geo-test-results-123456789012-eu-north-1/queries/*" &&
       toset(local.athena_reader_policy.Statement[7].Action) == toset(["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"]) &&
       alltrue([for index in [3, 4, 5, 6, 7] : local.athena_reader_policy.Statement[index].Condition.StringEquals["s3:ResourceAccount"] == var.aws_account_id])
     )
@@ -115,8 +115,8 @@ run "standalone_two_view_builder" {
       local.dbt_view_builder_policy.Statement[11].Action == "glue:GetTables" &&
       toset(local.dbt_view_builder_policy.Statement[11].Resource) == toset(concat([local.catalog_arn, local.database_arn, local.table_arn], local.gold_view_arns)) &&
       toset(local.gold_view_arns) == toset([
-        "arn:aws:glue:eu-west-1:123456789012:table/urban_geo_test_m4/grid_proximity",
-        "arn:aws:glue:eu-west-1:123456789012:table/urban_geo_test_m4/release_proximity"
+        "arn:aws:glue:eu-north-1:123456789012:table/urban_geo_test_m4/grid_proximity",
+        "arn:aws:glue:eu-north-1:123456789012:table/urban_geo_test_m4/release_proximity"
       ])
     )
     error_message = "Discovery must use one database and the source plus two exact Gold relations."

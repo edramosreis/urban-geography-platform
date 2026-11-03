@@ -33,7 +33,7 @@ def read_plan(
     account_id: str,
     snapshot_id: int,
     source_run_sha256: str,
-    region: str = "eu-west-1",
+    region: str = "eu-north-1",
     max_query_scan_bytes: int = MAX_SCAN_BYTES,
 ) -> dict[str, Any]:
     if not all(isinstance(value, str) for value in (deployment_name, account_id, region)):
@@ -180,10 +180,10 @@ def tooling_sdk_pins() -> dict[str, str]:
     return {p["name"]: p["version"] for p in packages}
 
 
-def create_athena_client(*, region: str = "eu-west-1", session: Any = None) -> Any:
+def create_athena_client(*, region: str = "eu-north-1", session: Any = None) -> Any:
     """Use tooling pins, verified TLS, fixed endpoint policy and one request attempt."""
-    if region != "eu-west-1":
-        raise ValueError("Athena preparation is scoped to eu-west-1")
+    if region != "eu-north-1":
+        raise ValueError("Athena preparation is scoped to eu-north-1")
     for name, pin in tooling_sdk_pins().items():
         if version(name) != pin:
             raise ValueError("Use the isolated analytics/athena tooling environment")

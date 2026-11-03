@@ -55,7 +55,7 @@ def check(project: Path, output: Path, scenario: str) -> dict[str, Any]:
         "AWS_SECRET_ACCESS_KEY": "offline-testing",
         "AWS_SESSION_TOKEN": "offline-testing",
         "AWS_EC2_METADATA_DISABLED": "true",
-        "AWS_DEFAULT_REGION": "eu-west-1",
+        "AWS_DEFAULT_REGION": "eu-north-1",
         "AWS_CONFIG_FILE": os.devnull,
         "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
         "DBT_SEND_ANONYMOUS_USAGE_STATS": "false",
@@ -73,7 +73,7 @@ def check(project: Path, output: Path, scenario: str) -> dict[str, Any]:
         from botocore.stub import Stubber
         from dbt.cli.main import dbtRunner
 
-        raw = create_athena_client(session=boto3.Session(region_name="eu-west-1"))
+        raw = create_athena_client(session=boto3.Session(region_name="eu-north-1"))
         clients.append(raw)
         controller = ViewController(
             raw,
