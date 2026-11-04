@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--credentials-stdin", action="store_true")
+    parser.add_argument("--capture-view-metadata", action="store_true")
     args = parser.parse_args()
     options = dict(
         input_path=args.input,
@@ -29,9 +30,12 @@ def main() -> None:
         writer_receipt_sha256=args.writer_receipt_sha256,
         output=args.output,
     )
+    if args.capture_view_metadata:
+        options["capture_view_metadata"] = True
     try:
+        preparation = {k: v for k, v in options.items() if k != "capture_view_metadata"}
         plan, _ = prepare_operation(
-            args.project, args.plan, args.plan_sha256, args.source_role_arn, **options
+            args.project, args.plan, args.plan_sha256, args.source_role_arn, **preparation
         )
         if not args.execute:
             print(
@@ -41,6 +45,7 @@ def main() -> None:
                         "plan_sha256": args.plan_sha256,
                         "region": plan["source_plan"]["target"]["region"],
                         "credential_exported": False,
+                        "capture_view_metadata": args.capture_view_metadata,
                     }
                 )
             )
@@ -59,7 +64,13 @@ def main() -> None:
             **options,
         )
         proof = save_completion(
-            args.output, plan, args.plan_sha256, args.input, args.writer_receipt_sha256, result
+            args.output,
+            plan,
+            args.plan_sha256,
+            args.input,
+            args.writer_receipt_sha256,
+            result,
+            capture_view_metadata=args.capture_view_metadata,
         )
         reply = operation_reply(args.plan_sha256, proof)
     except Exception:

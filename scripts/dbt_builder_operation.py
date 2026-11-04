@@ -10,7 +10,7 @@ from typing import Any
 
 from athena_clients import query_resources
 from athena_control import STOP_SECONDS, WATCH_SECONDS, canonical
-from athena_preflight import expected_caller
+from athena_preflight import caller_identity, catalog_state, expected_caller
 from athena_read_plan import ARTIFACTS, same
 from athena_reader import READER_SECONDS, WORKER_PYTHON, ReaderProcess
 from athena_reader_worker import verified_jars
@@ -25,6 +25,7 @@ from dbt_builder_session import (
 )
 from dbt_model_executor import ModelExecutor
 from dbt_model_worker import tooling_ready
+from dbt_view_capture import capture_views
 from dbt_view_runner import run_view_build, save_record
 
 READ_SECONDS = 90
@@ -114,6 +115,7 @@ def run_operation(
     writer_receipt: Path,
     writer_receipt_sha256: str,
     output: Path,
+    capture_view_metadata: bool = False,
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -128,6 +130,8 @@ def run_operation(
         writer_receipt_sha256=writer_receipt_sha256,
         output=output,
     )
+    if type(capture_view_metadata) is not bool:
+        raise ValueError("capture_view_metadata must be an explicit boolean")
     if os.name != "posix" or not Path(WORKER_PYTHON).is_file():
         raise ValueError("Use the existing Linux Docker analytics/reader runtime")
     verified_jars()
@@ -138,6 +142,7 @@ def run_operation(
             raise BridgeError("builder_view_plan_changed")
         check_inputs(plan["source_plan"], input_path, writer_receipt, writer_receipt_sha256)
 
+    metadata_binding: dict[str, Any] = {}
     acquisition = builder_credentials(project, plan_path, plan_sha256, principal_arn, content)
     content = b""
     with acquisition as snapshot:
@@ -186,6 +191,42 @@ def run_operation(
                 pause=pause,
             )
             unchanged()
+            if capture_view_metadata:
+                snapshot.require_operation(FINAL_RESERVE_SECONDS)
+                source_record = pinned_record(
+                    output / "source-verification.json", report["source_verification_sha256"]
+                )
+
+                def metadata_gate() -> dict[str, Any]:
+                    unchanged()
+                    pinned_record(
+                        output / "source-verification.json", report["source_verification_sha256"]
+                    )
+                    caller_identity(clients["sts"], caller)
+                    catalog = catalog_state(clients["glue"], plan["source_plan"])
+                    if not same(catalog, source_record["source"]["catalog"]):
+                        raise ValueError("Source catalog changed during view metadata capture")
+                    return catalog
+
+                metadata_gate()
+                capture_pin = capture_views(
+                    clients["glue"], plan, plan_sha256, caller, output / "view-metadata"
+                )
+                catalog = metadata_gate()
+                gate_pin = save_record(
+                    output / "view-metadata/source-gate.json",
+                    {
+                        "run_intent_sha256": report["run_intent_sha256"],
+                        "capture_sha256": capture_pin,
+                        "caller": caller,
+                        "catalog": catalog,
+                    },
+                )
+                metadata_binding = {
+                    "capture_view_metadata": True,
+                    "view_metadata_sha256": capture_pin,
+                    "view_metadata_source_gate_sha256": gate_pin,
+                }
     # Publish the outer binding only after client closure and scoped credential cleanup.
     unchanged()
     receipt_pin = hashlib.sha256(canonical(report)).hexdigest()
@@ -203,6 +244,7 @@ def run_operation(
             "caller": caller,
             "run_intent_sha256": report["run_intent_sha256"],
             "receipt_sha256": receipt_pin,
+            **metadata_binding,
         },
     )
     return report

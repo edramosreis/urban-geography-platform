@@ -10,6 +10,7 @@ from athena_preflight import expected_caller
 from athena_read_plan import same
 from athena_results import expected_gold
 from aws_login_bridge import BridgeError, decode, read_record
+from dbt_view_capture import load_capture
 from dbt_view_plan import VIEWS, normalized_sql
 
 from urban_geography.glue_runtime import runtime_plan
@@ -34,6 +35,9 @@ FILES = {
     for i in (1, 2)
     for name in ("intent", "submission", "query", "receipt")
 }
+
+
+CAPTURE_FILES = {"view-metadata/capture.json", "view-metadata/source-gate.json"}
 
 
 def _pin(value: Any) -> bool:
@@ -89,6 +93,7 @@ def _validate(
     pin: str,
     input_path: Path,
     writer_pin: str,
+    capture_view_metadata: bool = False,
 ) -> None:
     source_plan = plan["source_plan"]
     owner, deployment = (source_plan["target"][k] for k in ("account_id", "deployment_name"))
@@ -345,16 +350,41 @@ def _validate(
             "caller": caller,
             "run_intent_sha256": root_pin,
             "receipt_sha256": h["receipt.json"],
+            **(
+                {
+                    "capture_view_metadata": True,
+                    "view_metadata_sha256": h["view-metadata/capture.json"],
+                    "view_metadata_source_gate_sha256": h["view-metadata/source-gate.json"],
+                }
+                if capture_view_metadata
+                else {}
+            ),
         },
     )
 
+    if capture_view_metadata:
+        _require(
+            r["view-metadata/source-gate.json"],
+            {
+                "run_intent_sha256": root_pin,
+                "capture_sha256": h["view-metadata/capture.json"],
+                "caller": caller,
+                "catalog": catalog,
+            },
+        )
 
-def _records(output: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+
+def _records(
+    output: Path, capture_view_metadata: bool = False
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     for name in (".", "queries", "queries/query-01", "queries/query-02", "dbt"):
         directory = output / name
         if directory.is_symlink() or not directory.is_dir():
             raise BridgeError("builder_attempt_not_regular")
-    pairs = {name: read_record(output / name) for name in FILES}
+    pairs = {
+        name: read_record(output / name)
+        for name in FILES | (CAPTURE_FILES if capture_view_metadata else set())
+    }
     return {k: v[0] for k, v in pairs.items()}, {k: v[1] for k, v in pairs.items()}
 
 
@@ -365,9 +395,20 @@ def _check(
     pin: str,
     input_path: Path,
     writer_pin: str,
-) -> None:
+    metadata_output: Path | None = None,
+) -> dict[str, Any]:
     try:
-        _validate(records, hashes, plan, pin, input_path, writer_pin)
+        _validate(records, hashes, plan, pin, input_path, writer_pin, metadata_output is not None)
+        if metadata_output is not None:
+            metadata = load_capture(
+                metadata_output, plan, pin, records["intent.json"]["expected_caller"]
+            )
+            _require(
+                read_record(metadata_output / "capture.json")[1],
+                hashes["view-metadata/capture.json"],
+            )
+            return metadata
+        return {}
     except (KeyError, TypeError, AttributeError, IndexError):
         raise BridgeError("builder_saved_records_malformed") from None
 
@@ -379,12 +420,28 @@ def save_completion(
     input_path: Path,
     writer_pin: str,
     result: dict[str, Any],
+    *,
+    capture_view_metadata: bool = False,
 ) -> str:
-    records, hashes = _records(output)
-    _check(records, hashes, plan, pin, input_path, writer_pin)
+    records, hashes = _records(output, capture_view_metadata)
+    _check(
+        records,
+        hashes,
+        plan,
+        pin,
+        input_path,
+        writer_pin,
+        output / "view-metadata" if capture_view_metadata else None,
+    )
     _require(records["receipt.json"], result)
     content = canonical(
-        {"version": 1, "plan_sha256": pin, "writer_receipt_sha256": writer_pin, "files": hashes}
+        {
+            "version": 1,
+            "plan_sha256": pin,
+            "writer_receipt_sha256": writer_pin,
+            "files": hashes,
+            **({"capture_view_metadata": True} if capture_view_metadata else {}),
+        }
     )
     write_once(output / PROOF, content)
     return hashlib.sha256(content).hexdigest()
@@ -397,18 +454,35 @@ def load_completion(
     input_path: Path,
     writer_pin: str,
     reply: dict[str, Any],
+    *,
+    capture_view_metadata: bool = False,
 ) -> dict[str, Any]:
     proof, proof_pin = read_record(output / PROOF)
-    records, hashes = _records(output)
+    records, hashes = _records(output, capture_view_metadata)
     _require(proof_pin, reply["proof_sha256"])
     _require(
         proof,
-        {"version": 1, "plan_sha256": pin, "writer_receipt_sha256": writer_pin, "files": hashes},
+        {
+            "version": 1,
+            "plan_sha256": pin,
+            "writer_receipt_sha256": writer_pin,
+            "files": hashes,
+            **({"capture_view_metadata": True} if capture_view_metadata else {}),
+        },
     )
-    _check(records, hashes, plan, pin, input_path, writer_pin)
+    metadata = _check(
+        records,
+        hashes,
+        plan,
+        pin,
+        input_path,
+        writer_pin,
+        output / "view-metadata" if capture_view_metadata else None,
+    )
     _require(reply, operation_reply(pin, proof_pin))
     return {
         "status": "scoped_view_build_completed",
         "models_succeeded": True,
         "result_verified": False,
+        **metadata,
     }

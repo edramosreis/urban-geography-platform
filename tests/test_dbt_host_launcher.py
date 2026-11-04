@@ -23,8 +23,8 @@ host = sys.modules["dbt_host_launcher"]
 
 
 @pytest.fixture
-def case(tmp_path, monkeypatch):
-    case = prepared_case(tmp_path, monkeypatch)
+def case(tmp_path, monkeypatch, request):
+    case = prepared_case(tmp_path, monkeypatch, capture=getattr(request, "param", False))
     monkeypatch.setattr(
         host,
         "JARS",
@@ -253,3 +253,19 @@ def test_owned_name_collision_prevents_credential_export_and_container_run(case)
     case.export.assert_not_called()
     case.cleanup.assert_not_called()
     assert not case.output.exists()
+
+
+@pytest.mark.parametrize("case", [True], indirect=True)
+def test_capture_flag_reaches_receiver_and_checks_the_extended_proof(case):
+    result = host.launch(*paths(case), "urban-geo", "aws", "docker", capture_view_metadata=True)
+    assert result["metadata_captured"] and result["result_verified"] is False
+    assert result["view_metadata_compatibility"] == "matches_current_checker"
+    command = next(c.args[0] for c in case.capture.call_args_list if "run" in c.args[0])
+    assert "--capture-view-metadata" in command
+
+
+def test_container_cannot_silently_omit_requested_metadata(case):
+    with pytest.raises(bridge.BridgeError, match="handoff_failed"):
+        host.launch(*paths(case), "urban-geo", "aws", "docker", capture_view_metadata=True)
+    assert case.credentials.token == ""
+    case.cleanup.assert_called_once()

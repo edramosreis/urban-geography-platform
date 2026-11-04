@@ -35,7 +35,11 @@ def prepare_launch(
     writer_pin: str,
     bundle: Path,
     output: Path,
+    *,
+    capture_view_metadata: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    if type(capture_view_metadata) is not bool:
+        raise ValueError("capture_view_metadata must be an explicit boolean")
     plan, identity = prepare_operation(
         project,
         plan_path,
@@ -66,9 +70,20 @@ def docker_command(
     output: Path,
     *,
     offline: bool = False,
+    capture_view_metadata: bool = False,
 ) -> list[str]:
     prepare_launch(
-        project, plan, pin, principal, sdk, input_path, writer, writer_pin, bundle, output
+        project,
+        plan,
+        pin,
+        principal,
+        sdk,
+        input_path,
+        writer,
+        writer_pin,
+        bundle,
+        output,
+        capture_view_metadata=capture_view_metadata,
     )
     command = bridge.docker_command(docker, "analytics", sdk, image, name, offline=offline)
     # dbt verification needs the scaffold, including the already-pinned SDK lock.
@@ -122,6 +137,8 @@ def docker_command(
         "--execute",
         "--credentials-stdin",
     ]
+    if capture_view_metadata:
+        command.append("--capture-view-metadata")
     return command
 
 
@@ -139,9 +156,21 @@ def launch(
     profile: str,
     aws: str,
     docker: str,
+    *,
+    capture_view_metadata: bool = False,
 ) -> dict[str, Any]:
     plan, identity = prepare_launch(
-        project, plan_path, pin, principal, sdk, input_path, writer, writer_pin, bundle, output
+        project,
+        plan_path,
+        pin,
+        principal,
+        sdk,
+        input_path,
+        writer,
+        writer_pin,
+        bundle,
+        output,
+        capture_view_metadata=capture_view_metadata,
     )
     selected, environment = bridge.local_docker(docker)
     image = (
@@ -168,6 +197,7 @@ def launch(
         writer_pin,
         bundle,
         output,
+        capture_view_metadata=capture_view_metadata,
     )
     if bridge.capture(
         [*selected, "container", "ls", "--all", "--quiet", "--filter", "name=^/" + name + "$"],
@@ -188,6 +218,7 @@ def launch(
                 "container": name,
                 "image": image,
                 "supervisor_seconds": SUPERVISOR_SECONDS,
+                "capture_view_metadata": capture_view_metadata,
             },
             stream,
             indent=2,
@@ -206,14 +237,30 @@ def launch(
             environment=environment,
         )
         reply = verify_reply(content, pin)
+        metadata = {}
         if reply["status"] != "operation_failed":
-            load_completion(output / "attempt", plan, pin, input_path, writer_pin, reply)
+            verified = load_completion(
+                output / "attempt",
+                plan,
+                pin,
+                input_path,
+                writer_pin,
+                reply,
+                capture_view_metadata=capture_view_metadata,
+            )
+            if capture_view_metadata:
+                metadata = {
+                    k: verified[k] for k in ("metadata_captured", "view_metadata_compatibility")
+                }
+        elif capture_view_metadata:
+            metadata = {"metadata_captured": False, "view_metadata_compatibility": None}
         return {
             "status": reply["status"],
             "models_succeeded": reply["models_succeeded"],
             "result_verified": False,
             "proof_sha256": reply["proof_sha256"],
             "reconcile_before_retry": not reply["models_succeeded"],
+            **metadata,
         }
     except Exception:
         raise bridge.BridgeError("builder_handoff_failed_reconcile_before_retry") from None
@@ -233,6 +280,7 @@ def main() -> None:
     parser.add_argument("--profile", default="urban-geo")
     parser.add_argument("--aws-cli")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--capture-view-metadata", action="store_true")
     args = parser.parse_args()
     paths = (
         args.project,
@@ -247,7 +295,7 @@ def main() -> None:
         args.output,
     )
     try:
-        plan, _ = prepare_launch(*paths)
+        plan, _ = prepare_launch(*paths, capture_view_metadata=args.capture_view_metadata)
         if not args.execute:
             print(
                 json.dumps(
@@ -257,6 +305,7 @@ def main() -> None:
                         "region": plan["source_plan"]["target"]["region"],
                         "credential_exported": False,
                         "supervisor_seconds": SUPERVISOR_SECONDS,
+                        "capture_view_metadata": args.capture_view_metadata,
                     }
                 )
             )
@@ -264,7 +313,9 @@ def main() -> None:
         aws, docker = args.aws_cli or shutil.which("aws"), shutil.which("docker")
         if not aws or not docker:
             raise bridge.BridgeError("aws_cli_and_docker_required")
-        result = launch(*paths, args.profile, aws, docker)
+        result = launch(
+            *paths, args.profile, aws, docker, capture_view_metadata=args.capture_view_metadata
+        )
     except Exception as error:
         result = {"status": "handoff_failed", "reconcile_before_retry": True}
         if (

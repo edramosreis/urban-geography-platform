@@ -12,8 +12,8 @@ from dbt_host_fixtures import RECEIVER as receiver
 
 
 @pytest.fixture
-def case(tmp_path, monkeypatch):
-    case = prepared_case(tmp_path, monkeypatch)
+def case(tmp_path, monkeypatch, request):
+    case = prepared_case(tmp_path, monkeypatch, capture=getattr(request, "param", False))
     argv = [
         "receiver",
         "--plan",
@@ -92,3 +92,15 @@ def test_oversized_stdin_never_reaches_the_operation(case, monkeypatch, capsys):
     receiver.main()
     assert json.loads(capsys.readouterr().out) == RECEIPT.operation_reply(case.pin)
     case.run.assert_not_called()
+
+
+@pytest.mark.parametrize("case", [True], indirect=True)
+def test_capture_flag_is_passed_to_the_operation_and_proof(case, monkeypatch, capsys):
+    sys.argv.extend(["--execute", "--credentials-stdin", "--capture-view-metadata"])
+    monkeypatch.setattr(
+        sys, "stdin", SimpleNamespace(isatty=lambda: False, buffer=io.BytesIO(b"synthetic packet"))
+    )
+    (case.evidence / RECEIPT.PROOF).unlink()
+    receiver.main()
+    assert RECEIPT.verify_reply(capsys.readouterr().out.encode(), case.pin)["models_succeeded"]
+    assert case.run.call_args.kwargs["capture_view_metadata"] is True

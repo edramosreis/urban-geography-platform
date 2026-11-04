@@ -22,6 +22,7 @@ for name in (
     "dbt_adapter_binding",
     "dbt_model_worker",
     "dbt_model_executor",
+    "dbt_view_capture",
     "dbt_builder_operation",
 ):
     if name not in sys.modules:

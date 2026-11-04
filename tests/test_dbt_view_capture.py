@@ -19,12 +19,15 @@ for dependency in ("aws_login_bridge", "athena_preflight"):
         sys.modules[dependency] = module
         dependency_spec.loader.exec_module(module)
 
-spec = importlib.util.spec_from_file_location(
-    "dbt_view_capture", ROOT / "scripts/dbt_view_capture.py"
-)
-capture = importlib.util.module_from_spec(spec)
-sys.modules["dbt_view_capture"] = capture
-spec.loader.exec_module(capture)
+if "dbt_view_capture" not in sys.modules:
+    spec = importlib.util.spec_from_file_location(
+        "dbt_view_capture", ROOT / "scripts/dbt_view_capture.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["dbt_view_capture"] = module
+    spec.loader.exec_module(module)
+capture = sys.modules["dbt_view_capture"]
+
 CALLER = {
     "Account": "123456789012",
     "Arn": "arn:aws:sts::123456789012:assumed-role/urban-geo-test-dbt-view-builder/dbt-builder-"

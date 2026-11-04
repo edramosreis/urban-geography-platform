@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import json
 import sys
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ for name in (
     "dbt_adapter_binding",
     "dbt_model_worker",
     "dbt_model_executor",
+    "dbt_view_capture",
     "dbt_builder_operation",
     "dbt_builder_receipt",
     "run_dbt_builder",
@@ -39,7 +41,7 @@ CALLER = {
 }
 
 
-def prepared_case(tmp_path, monkeypatch):
+def prepared_case(tmp_path, monkeypatch, capture=False):
     fixture = tmp_path / "artifacts/fixtures"
     fixture.mkdir(parents=True)
     case = runner_case(fixture, monkeypatch)
@@ -105,8 +107,43 @@ def prepared_case(tmp_path, monkeypatch):
             ).hexdigest(),
         },
     )
+    if capture:
+        from unittest.mock import Mock
+
+        from dbt_catalog_fixtures import fake_view
+
+        metadata = sys.modules["dbt_view_capture"]
+        monkeypatch.setattr(metadata, "ARTIFACTS", tmp_path / "artifacts")
+        client = Mock()
+        client.get_table.side_effect = lambda **kw: {"Table": fake_view(recipe, kw["Name"])[0]}
+        capture_pin = metadata.capture_views(
+            client, recipe, pin, CALLER, case.output / "view-metadata"
+        )
+        source = RECEIPT.read_record(case.output / "source-verification.json")[0]["source"]
+        gate_pin = RUNNER.save_record(
+            case.output / "view-metadata/source-gate.json",
+            {
+                "run_intent_sha256": result["run_intent_sha256"],
+                "capture_sha256": capture_pin,
+                "caller": CALLER,
+                "catalog": source["catalog"],
+            },
+        )
+        outer = case.output / "builder-operation.json"
+        binding = json.loads(outer.read_bytes()) | {
+            "capture_view_metadata": True,
+            "view_metadata_sha256": capture_pin,
+            "view_metadata_source_gate_sha256": gate_pin,
+        }
+        outer.write_bytes(RUNNER.canonical(binding))
     proof = RECEIPT.save_completion(
-        case.output, recipe, pin, case.options["input_path"], writer_pin, result
+        case.output,
+        recipe,
+        pin,
+        case.options["input_path"],
+        writer_pin,
+        result,
+        capture_view_metadata=capture,
     )
     sdk = tmp_path / "artifacts/sdk"
     sdk.mkdir()
