@@ -58,12 +58,12 @@ run "cleanup_versions_and_uploads_are_exact" {
   variables { trial_cleanup_principal_arn = "arn:aws:iam::123456789012:role/login" }
   assert {
     condition = (
-      toset(local.trial_cleanup_policy.Statement[1].Action) == toset(["s3:DeleteObjectVersion", "s3:AbortMultipartUpload"]) &&
+      toset(local.trial_cleanup_policy.Statement[1].Action) == toset(["s3:DeleteObjectVersion", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]) &&
       toset(local.trial_cleanup_policy.Statement[1].Resource) == toset(concat(local.release_object_arns, [local.table_objects_arn, "arn:aws:s3:::${local.bucket_names["lake"]}/${local.scratch_prefix}/*"])) &&
       local.trial_cleanup_policy.Statement[1].Condition.StringEquals["s3:ResourceAccount"] == var.aws_account_id &&
       local.trial_cleanup_policy.Statement[3].Effect == "Deny" && local.trial_cleanup_policy.Statement[3].Action == "s3:DeleteObject" &&
       local.trial_cleanup_policy.Statement[3].Resource == "arn:aws:s3:::${local.bucket_names["lake"]}/*" &&
-      toset(local.trial_cleanup_policy.Statement[2].Action) == toset(["s3:DeleteObject", "s3:AbortMultipartUpload"]) &&
+      toset(local.trial_cleanup_policy.Statement[2].Action) == toset(["s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]) &&
       local.trial_cleanup_policy.Statement[2].Resource == "arn:aws:s3:::${local.bucket_names["results"]}/queries/*"
     )
     error_message = "Delete enumerated lake versions rather than adding markers; only the bound release/table/scratch/results can be removed."
