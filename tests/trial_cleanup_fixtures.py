@@ -57,7 +57,8 @@ def packet(seconds=900, owner=OWNER):
 
 def make_case(frozen, tmp_path, monkeypatch):
     prepared = inventory.cleanup_scope(frozen.path, frozen.pin)
-    path = tmp_path / "plan.json"
+    (tmp_path / "inventory-prepared").mkdir()
+    path = tmp_path / "inventory-prepared" / "plan.json"
     path.write_text(json.dumps(prepared), encoding="utf-8")
     pin = hashlib.sha256(path.read_bytes()).hexdigest()
     monkeypatch.setattr(session.uuid, "uuid4", lambda: SimpleNamespace(hex="a" * 32))

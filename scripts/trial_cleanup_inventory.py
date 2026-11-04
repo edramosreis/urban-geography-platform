@@ -130,9 +130,8 @@ def _save(path: Path, value: dict[str, Any], ceiling: int) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def inventory_s3(client: InventoryClient, release: Path, pin: str, output: Path) -> dict[str, Any]:
-    """Four bounded listing streams with explicit owner; the caller owns its SDK client."""
-    scope = cleanup_scope(release, pin)
+def validate_inventory_output(release: Path, output: Path) -> None:
+    """Reject an overlapping or reused output before credentials or service clients."""
     destination, source = output.resolve(), release.resolve()
     if (
         output.exists()
@@ -143,6 +142,12 @@ def inventory_s3(client: InventoryClient, release: Path, pin: str, output: Path)
         or source.is_relative_to(destination)
     ):
         raise ValueError("Use fresh inventory output under artifacts, separate from the release")
+
+
+def inventory_s3(client: InventoryClient, release: Path, pin: str, output: Path) -> dict[str, Any]:
+    """Four bounded listing streams with explicit owner; the caller owns its SDK client."""
+    scope = cleanup_scope(release, pin)
+    validate_inventory_output(release, output)
     output.mkdir(parents=True)
     plan_pin = _save(output / "plan.json", scope, 64 * 1024)
     entries: list[dict[str, Any]] = []
