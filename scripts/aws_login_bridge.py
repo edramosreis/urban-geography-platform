@@ -1,6 +1,7 @@
 """Pass one temporary CLI credential snapshot to a fixed Docker identity probe."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +43,41 @@ def decode(content: bytes, maximum: int = MAX_BYTES) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise BridgeError("invalid_json_record")
     return value
+
+
+def read_record(path: Path) -> tuple[dict[str, Any], str]:
+    """Read one bounded regular JSON evidence record, preserving its original-byte hash."""
+    if path.is_symlink() or not path.is_file() or path.parent.is_symlink():
+        raise BridgeError("operation_record_not_regular")
+    with path.open("rb") as stream:
+        content = stream.read(64 * 1024 + 1)
+    return decode(content, 64 * 1024), hashlib.sha256(content).hexdigest()
+
+
+def analytics_runtime(
+    sdk_root: Path, bundle: Path, output: Path, jars: Sequence[tuple[str, str]]
+) -> Path:
+    """Verify the cached analytics SDK/JAR and keep writable output separate."""
+    sdk = sdk_directory(sdk_root, "analytics")
+    if sdk.is_relative_to(output.resolve()) or output.resolve().is_relative_to(sdk):
+        raise BridgeError("output_overlaps_sdk")
+    bundle_name = "iceberg-aws-bundle-1.10.2.jar"
+    if (
+        bundle.is_symlink()
+        or not bundle.is_file()
+        or bundle.name != bundle_name
+        or not bundle.resolve().is_relative_to(ROOT / ".private/tools/glue-runtime")
+    ):
+        raise BridgeError("use_existing_verified_reader_bundle")
+    with bundle.open("rb") as stream:
+        actual = hashlib.file_digest(stream, "sha256").hexdigest()
+    if actual != next(pin for url, pin in jars if url.endswith("/" + bundle_name)):
+        raise BridgeError("reader_bundle_checksum_differs")
+    if output.resolve().is_relative_to(bundle.parent.resolve()) or bundle.resolve().is_relative_to(
+        output.resolve()
+    ):
+        raise BridgeError("output_overlaps_bundle")
+    return sdk
 
 
 def account_id(value: str) -> str:

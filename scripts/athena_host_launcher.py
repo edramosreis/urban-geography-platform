@@ -1,7 +1,6 @@
 """Plan by default; pass one browser snapshot to a fixed local Athena reader container."""
 
 import argparse
-import hashlib
 import json
 import re
 import shutil
@@ -44,24 +43,7 @@ def prepare_launch(
         writer_receipt_sha256=writer_pin,
         output=output,
     )
-    sdk = bridge.sdk_directory(sdk_root, "analytics")
-    if sdk.is_relative_to(output.resolve()) or output.resolve().is_relative_to(sdk):
-        raise bridge.BridgeError("output_overlaps_sdk")
-    if (
-        bundle.is_symlink()
-        or not bundle.is_file()
-        or bundle.name != BUNDLE_NAME
-        or not bundle.resolve().is_relative_to(bridge.ROOT / ".private/tools/glue-runtime")
-    ):
-        raise bridge.BridgeError("use_existing_verified_reader_bundle")
-    with bundle.open("rb") as source:
-        actual = hashlib.file_digest(source, "sha256").hexdigest()
-    if actual != next(pin for url, pin in JARS if url.endswith("/" + BUNDLE_NAME)):
-        raise bridge.BridgeError("reader_bundle_checksum_differs")
-    if output.resolve().is_relative_to(bundle.parent.resolve()) or bundle.resolve().is_relative_to(
-        output.resolve()
-    ):
-        raise bridge.BridgeError("output_overlaps_bundle")
+    bridge.analytics_runtime(sdk_root, bundle, output, JARS)
     return plan, identity
 
 

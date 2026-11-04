@@ -12,6 +12,7 @@ from athena_preflight import expected_caller
 from athena_read_plan import same
 from athena_results import SHARE_TOLERANCE, expected_gold
 from aws_login_bridge import BridgeError, decode
+from aws_login_bridge import read_record as read_record
 
 from urban_geography.glue_runtime import runtime_plan
 
@@ -30,14 +31,6 @@ PROOF = "operation-proof.json"
 
 def _pin(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
-
-
-def read_record(path: Path) -> tuple[dict[str, Any], str]:
-    if path.is_symlink() or not path.is_file() or path.parent.is_symlink():
-        raise BridgeError("operation_record_not_regular")
-    with path.open("rb") as stream:
-        content = stream.read(MAX_RECORD_BYTES + 1)
-    return decode(content, MAX_RECORD_BYTES), hashlib.sha256(content).hexdigest()
 
 
 def operation_reply(
