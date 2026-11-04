@@ -18,6 +18,7 @@ from trial_cleanup_fixtures import (
     packet,
     roles,
 )
+from trial_service_fixtures import make_services
 
 name = "trial_cleanup_operation"
 if name not in sys.modules:
@@ -265,3 +266,190 @@ def test_sdk_factory_rejects_wrong_pins_missing_sdk_or_empty_snapshot(monkeypatc
         fake_import.assert_not_called()
     finally:
         snapshot.clear()
+
+
+def selected(case):
+    return operation.run_inventory(
+        case.frozen.path,
+        case.frozen.pin,
+        case.path,
+        case.pin,
+        PRINCIPAL,
+        packet(),
+        output=case.output,
+        include_services=True,
+    )
+
+
+def service_clients(case, monkeypatch):
+    value = make_services(case.frozen)
+
+    def create(snapshot, service):
+        assert snapshot is case.opened[0] and snapshot.token == "dummyCleanupToken"
+        return {"glue": value.glue, "athena": value.athena}[service]
+
+    value.factory = Mock(side_effect=create)
+    monkeypatch.setattr(operation, "create_service_client", value.factory)
+    return value
+
+
+def test_selected_services_bind_both_reports_and_intent_after_all_five_clients_close(
+    case, monkeypatch
+):
+    value = service_clients(case, monkeypatch)
+    original = operation.write_once
+
+    def write(path, content):
+        if path.name == "session-complete.json":
+            assert_closed(case)
+            value.glue.close.assert_called_once_with()
+            value.athena.close.assert_called_once_with()
+        return original(path, content)
+
+    monkeypatch.setattr(operation, "write_once", write)
+    result = selected(case)
+    assert result["status"] == "scoped_trial_inventory_complete" and result["include_services"]
+    assert not result["requires_review"] and not result["deletion_authorized"]
+    for filename, field in [
+        ("s3/inventory.json", "inventory_sha256"),
+        ("services/inventory.json", "service_inventory_sha256"),
+        ("operation-intent.json", "operation_intent_sha256"),
+    ]:
+        assert hashlib.sha256((case.output / filename).read_bytes()).hexdigest() == result[field]
+    assert value.factory.call_count == 2
+    assert {call.args[1] for call in value.factory.call_args_list} == {"glue", "athena"}
+    assert {call[0] for call in value.glue.method_calls} <= {
+        "close",
+        "get_database",
+        "get_tables",
+        "get_job",
+        "get_job_runs",
+    }
+    assert {call[0] for call in value.athena.method_calls} <= {
+        "close",
+        "get_work_group",
+        "list_query_executions",
+        "get_query_execution",
+    }
+
+
+def test_selected_active_work_remains_review_required_even_when_both_listings_complete(
+    case, monkeypatch
+):
+    value = service_clients(case, monkeypatch)
+    value.run["JobRunState"] = "RUNNING"
+    result = selected(case)
+    assert (
+        result["requires_review"]
+        and result["service_inventory_status"] == "service_inventory_requires_review"
+    )
+    assert not result["quiescence_and_catalog_observed"] and not result["deletion_authorized"]
+    assert_closed(case)
+
+
+def test_default_s3_only_mode_never_constructs_service_clients(case, monkeypatch):
+    factory = Mock(side_effect=AssertionError("unexpected services"))
+    monkeypatch.setattr(operation, "create_service_client", factory)
+    result = run(case)
+    assert result["status"] == "scoped_s3_inventory_complete" and "include_services" not in result
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize("flag", ["true", 1, None])
+def test_service_selection_must_be_boolean_before_credentials(case, monkeypatch, flag):
+    receive = Mock(side_effect=AssertionError("must not receive credentials"))
+    monkeypatch.setattr(roles, "receive", receive)
+    with pytest.raises(ValueError, match="explicit boolean"):
+        operation.run_inventory(
+            case.frozen.path,
+            case.frozen.pin,
+            case.path,
+            case.pin,
+            PRINCIPAL,
+            b"unused",
+            output=case.output,
+            include_services=flag,
+        )
+    receive.assert_not_called()
+    case.factory.assert_not_called()
+
+
+@pytest.mark.parametrize("service", ["glue", "athena"])
+def test_partial_service_client_startup_closes_previous_clients_and_clears_keys(
+    case, monkeypatch, service
+):
+    value = service_clients(case, monkeypatch)
+    create = value.factory.side_effect
+
+    def fail(snapshot, name):
+        if name == service:
+            raise RuntimeError("constructor failed")
+        return create(snapshot, name)
+
+    value.factory.side_effect = fail
+    with pytest.raises(RuntimeError, match="constructor failed"):
+        selected(case)
+    assert_closed(case)
+    if service == "athena":
+        value.glue.close.assert_called_once_with()
+    else:
+        value.glue.close.assert_not_called()
+    value.athena.close.assert_not_called()
+    assert not case.output.exists()
+
+
+def test_service_read_failure_retains_partial_service_evidence_and_never_starts_s3_reads(
+    case, monkeypatch
+):
+    value = service_clients(case, monkeypatch)
+    value.athena.get_work_group.side_effect = RuntimeError("provider-private-sentinel")
+    with pytest.raises(RuntimeError):
+        selected(case)
+    assert (case.output / "services/failure.json").exists()
+    assert (case.output / "services/job-runs-01.json").exists()
+    assert not (case.output / "session-complete.json").exists()
+    case.s3.get_bucket_location.assert_not_called()
+    assert_closed(case)
+    value.glue.close.assert_called_once_with()
+    value.athena.close.assert_called_once_with()
+
+
+def test_selected_mode_requires_its_longer_admission_before_any_inventory_client(case, monkeypatch):
+    value = service_clients(case, monkeypatch)
+    case.raw["Expiration"] = datetime.now(UTC) + timedelta(seconds=1400)
+    with pytest.raises(bridge.BridgeError, match="credential_lifetime_too_short_for_operation"):
+        selected(case)
+    assert all(not any(c.session_options().values()) for c in case.credentials)
+    for client in case.clients:
+        client.close.assert_called_once_with()
+    case.s3_factory.assert_not_called()
+    value.factory.assert_not_called()
+    assert not case.output.exists()
+
+
+def test_selected_service_calls_recheck_lifetime_before_forwarding(case, monkeypatch):
+    value = service_clients(case, monkeypatch)
+
+    def expire(**kwargs):
+        case.opened[0].expiration = datetime.now(UTC) + timedelta(seconds=80)
+        return {"Database": value.database}
+
+    value.glue.get_database.side_effect = expire
+    with pytest.raises(bridge.BridgeError):
+        selected(case)
+    value.glue.get_tables.assert_not_called()
+    case.s3.get_bucket_location.assert_not_called()
+    assert not (case.output / "session-complete.json").exists()
+    assert_closed(case)
+    value.glue.close.assert_called_once_with()
+    value.athena.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("filename", ["services/inventory.json", "operation-intent.json"])
+def test_selected_evidence_changed_during_client_close_cannot_complete(case, monkeypatch, filename):
+    service_clients(case, monkeypatch)
+    case.s3.close.side_effect = lambda: (case.output / filename).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="Saved inventory differs"):
+        selected(case)
+    assert not (case.output / "session-complete.json").exists()
+    assert_closed(case)
