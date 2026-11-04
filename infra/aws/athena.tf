@@ -124,12 +124,12 @@ resource "aws_iam_policy" "athena_reader" {
   }
 }
 
-# No attachment or table/view resources; applying this policy alone runs no dbt SQL.
+# Policy-only mode remains available; the optional builder role attaches only this policy.
 resource "aws_iam_policy" "dbt_view_builder" {
   count = var.enable_dbt_view_builder_policy ? 1 : 0
 
   name        = "${var.deployment_name}-dbt-view-builder"
-  description = "One workgroup, preserved pilot facts and two Gold view definitions; unattached."
+  description = "One workgroup, preserved pilot facts and two Gold view definitions."
   policy      = jsonencode(local.dbt_view_builder_policy)
 
   lifecycle {
@@ -169,4 +169,35 @@ resource "aws_iam_role_policy_attachment" "athena_reader" {
 
   role       = aws_iam_role.athena_reader[0].name
   policy_arn = aws_iam_policy.athena_reader[0].arn
+}
+
+
+# Separate human-controlled view identity; never attach builder permissions to the reader.
+resource "aws_iam_role" "dbt_view_builder" {
+  count = var.dbt_view_builder_principal_arn == null ? 0 : 1
+
+  name                 = "${var.deployment_name}-dbt-view-builder"
+  max_session_duration = 3600
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { AWS = var.dbt_view_builder_principal_arn }
+    }]
+  })
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_dbt_view_builder_policy
+      error_message = "The builder role requires its explicitly enabled two-view policy."
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "dbt_view_builder" {
+  count = var.dbt_view_builder_principal_arn != null && var.enable_dbt_view_builder_policy ? 1 : 0
+
+  role       = aws_iam_role.dbt_view_builder[0].name
+  policy_arn = aws_iam_policy.dbt_view_builder[0].arn
 }

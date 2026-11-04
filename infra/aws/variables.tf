@@ -112,7 +112,7 @@ variable "enable_athena_reader_policy" {
 
 
 variable "enable_dbt_view_builder_policy" {
-  description = "Prepare an unattached two-view dbt policy; no identity, workgroup enabling, dbt execution or teardown."
+  description = "Prepare the two-view dbt policy; a dedicated identity is optional and execution remains separate."
   type        = bool
   default     = false
 }
@@ -146,5 +146,21 @@ variable "athena_reader_principal_arn" {
       var.athena_reader_principal_arn != "arn:aws:iam::${var.aws_account_id}:role/${var.deployment_name}-athena-reader"
     )
     error_message = "Choose one existing same-account IAM role ARN; no user, root, session ARN, wildcard or reader self-trust."
+  }
+}
+
+
+variable "dbt_view_builder_principal_arn" {
+  description = "Optional exact same-account IAM role allowed to assume the two-view builder; null leaves its policy unattached."
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.dbt_view_builder_principal_arn == null ? true : (
+      length(var.dbt_view_builder_principal_arn) <= 576 &&
+      can(regex("^arn:aws:iam::${var.aws_account_id}:role/([A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}$", var.dbt_view_builder_principal_arn)) &&
+      var.dbt_view_builder_principal_arn != "arn:aws:iam::${var.aws_account_id}:role/${var.deployment_name}-dbt-view-builder"
+    )
+    error_message = "Choose one existing same-account IAM role ARN; no user, root, session ARN, wildcard or builder self-trust."
   }
 }

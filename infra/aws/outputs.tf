@@ -56,7 +56,7 @@ output "athena_reader_policy_arn" {
 
 
 output "dbt_view_builder_policy_arn" {
-  description = "Unattached standalone dbt policy; choose and approve its identity separately."
+  description = "Standalone dbt policy; its optional identity and deployment require separate approval."
   value       = try(aws_iam_policy.dbt_view_builder[0].arn, null)
 }
 
@@ -70,4 +70,10 @@ output "glue_operator_role_arn" {
 output "athena_reader_role_arn" {
   description = "Optional fact-reader role; creation/assumption and actual query execution need separate approval."
   value       = try(aws_iam_role.athena_reader[0].arn, null)
+}
+
+
+output "dbt_view_builder_role_arn" {
+  description = "Optional two-view builder role; creation/assumption and dbt execution need separate approval."
+  value       = try(aws_iam_role.dbt_view_builder[0].arn, null)
 }

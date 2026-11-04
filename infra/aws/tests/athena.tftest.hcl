@@ -281,3 +281,158 @@ run "reader_attachment_stays_separate_from_view_builder" {
     error_message = "Preparing dbt's separate policy must not attach its view permissions to the reader."
   }
 }
+
+
+run "builder_role_trust_and_only_builder_attachment" {
+  command = plan
+  variables {
+    enable_dbt_view_builder_policy = true
+    dbt_view_builder_principal_arn = "arn:aws:iam::123456789012:role/managed/project/login"
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_policy.dbt_view_builder[0]
+    values          = { arn = "arn:aws:iam::123456789012:policy/urban-geo-test-dbt-view-builder" }
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_role.dbt_view_builder[0]
+    values          = { arn = "arn:aws:iam::123456789012:role/urban-geo-test-dbt-view-builder" }
+  }
+  assert {
+    condition = (
+      aws_iam_role.dbt_view_builder[0].name == "urban-geo-test-dbt-view-builder" &&
+      aws_iam_role.dbt_view_builder[0].max_session_duration == 3600 &&
+      jsondecode(aws_iam_role.dbt_view_builder[0].assume_role_policy) == {
+        Version = "2012-10-17"
+        Statement = [{
+          Effect    = "Allow"
+          Action    = "sts:AssumeRole"
+          Principal = { AWS = var.dbt_view_builder_principal_arn }
+        }]
+      } &&
+      aws_iam_role_policy_attachment.dbt_view_builder[0].role == aws_iam_role.dbt_view_builder[0].name &&
+      aws_iam_role_policy_attachment.dbt_view_builder[0].policy_arn == aws_iam_policy.dbt_view_builder[0].arn &&
+      output.dbt_view_builder_role_arn == "arn:aws:iam::123456789012:role/urban-geo-test-dbt-view-builder" &&
+      length(aws_iam_role.athena_reader) == 0 && length(aws_iam_policy.athena_reader) == 0 &&
+      length(aws_iam_role.glue_operator) == 0 && length(aws_iam_role.glue_writer) == 0 &&
+      aws_athena_workgroup.analytics.state == "DISABLED"
+    )
+    error_message = "Trust one same-account role, attach only the builder policy and leave reader/writer identities and query admission unchanged."
+  }
+}
+
+run "builder_policy_only_keeps_role_optional" {
+  command = plan
+  variables { enable_dbt_view_builder_policy = true }
+  assert {
+    condition = (
+      length(aws_iam_role.dbt_view_builder) == 0 && length(aws_iam_role_policy_attachment.dbt_view_builder) == 0 &&
+      output.dbt_view_builder_role_arn == null
+    )
+    error_message = "Policy-only preparation must not create a builder identity or attach permissions."
+  }
+}
+
+run "builder_identity_disabled_by_default" {
+  command = plan
+  assert {
+    condition = (
+      length(aws_iam_role.dbt_view_builder) == 0 && length(aws_iam_role_policy_attachment.dbt_view_builder) == 0 &&
+      output.dbt_view_builder_role_arn == null
+    )
+    error_message = "Default infrastructure must omit the new builder identity."
+  }
+}
+
+run "builder_role_requires_builder_policy" {
+  command = plan
+  variables { dbt_view_builder_principal_arn = "arn:aws:iam::123456789012:role/login" }
+  expect_failures = [aws_iam_role.dbt_view_builder[0]]
+}
+
+run "builder_rejects_cross_account_trust" {
+  command = plan
+  variables {
+    enable_dbt_view_builder_policy = true
+    dbt_view_builder_principal_arn = "arn:aws:iam::999999999999:role/login"
+  }
+  expect_failures = [var.dbt_view_builder_principal_arn]
+}
+
+run "builder_rejects_session_trust" {
+  command = plan
+  variables {
+    enable_dbt_view_builder_policy = true
+    dbt_view_builder_principal_arn = "arn:aws:sts::123456789012:assumed-role/login/session"
+  }
+  expect_failures = [var.dbt_view_builder_principal_arn]
+}
+
+run "builder_rejects_wildcard_trust" {
+  command = plan
+  variables {
+    enable_dbt_view_builder_policy = true
+    dbt_view_builder_principal_arn = "arn:aws:iam::123456789012:role/*"
+  }
+  expect_failures = [var.dbt_view_builder_principal_arn]
+}
+
+run "builder_rejects_root_trust" {
+  command = plan
+  variables {
+    enable_dbt_view_builder_policy = true
+    dbt_view_builder_principal_arn = "arn:aws:iam::123456789012:root"
+  }
+  expect_failures = [var.dbt_view_builder_principal_arn]
+}
+
+run "builder_rejects_user_trust" {
+  command = plan
+  variables {
+    enable_dbt_view_builder_policy = true
+    dbt_view_builder_principal_arn = "arn:aws:iam::123456789012:user/login"
+  }
+  expect_failures = [var.dbt_view_builder_principal_arn]
+}
+
+run "builder_rejects_self_trust" {
+  command = plan
+  variables {
+    enable_dbt_view_builder_policy = true
+    dbt_view_builder_principal_arn = "arn:aws:iam::123456789012:role/urban-geo-test-dbt-view-builder"
+  }
+  expect_failures = [var.dbt_view_builder_principal_arn]
+}
+
+run "builder_and_reader_roles_remain_independent" {
+  command = plan
+  variables {
+    enable_athena_reader_policy    = true
+    enable_dbt_view_builder_policy = true
+    athena_reader_principal_arn    = "arn:aws:iam::123456789012:role/login"
+    dbt_view_builder_principal_arn = "arn:aws:iam::123456789012:role/login"
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_policy.dbt_view_builder[0]
+    values          = { arn = "arn:aws:iam::123456789012:policy/urban-geo-test-dbt-view-builder" }
+  }
+  override_resource {
+    override_during = plan
+    target          = aws_iam_policy.athena_reader[0]
+    values          = { arn = "arn:aws:iam::123456789012:policy/urban-geo-test-athena-reader" }
+  }
+  assert {
+    condition = (
+      aws_iam_role_policy_attachment.dbt_view_builder[0].policy_arn == aws_iam_policy.dbt_view_builder[0].arn &&
+      aws_iam_role_policy_attachment.athena_reader[0].policy_arn == aws_iam_policy.athena_reader[0].arn &&
+      aws_iam_role.dbt_view_builder[0].name != aws_iam_role.athena_reader[0].name &&
+      jsondecode(aws_iam_policy.athena_reader[0].policy).Statement == jsondecode(jsonencode(local.athena_reader_policy.Statement)) &&
+      length(local.athena_reader_policy.Statement) == 10 &&
+      length(local.dbt_view_builder_policy.Statement) == 13 &&
+      aws_athena_workgroup.analytics.state == "DISABLED"
+    )
+    error_message = "Each identity must receive only its own policy; enabling the builder must not broaden the reader or enable execution."
+  }
+}
