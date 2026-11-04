@@ -330,3 +330,21 @@ def test_cached_call_checks_lifetime_when_invoked_and_unlisted_calls_are_unavail
         _ = guarded.delete_work_group
     raw.delete_work_group.assert_not_called()
     case.snapshot.clear()
+
+
+def test_prepare_operation_needs_no_credentials_sdk_or_linux_runtime(case):
+    plan, identity = operation.prepare_operation(
+        case.plan,
+        case.pin,
+        PRINCIPAL,
+        input_path=case.trial.options["input_path"],
+        writer_receipt=case.writer,
+        writer_receipt_sha256=case.trial.options["writer_receipt_sha256"],
+        output=case.output,
+    )
+    assert plan == case.trial.plan and identity["query_plan_sha256"] == case.pin
+    assert identity["role_name"] == "urban-geo-test-athena-reader"
+    case.acquisition.assert_not_called()
+    case.owner.assert_not_called()
+    case.jars.assert_not_called()
+    assert not case.output.exists()

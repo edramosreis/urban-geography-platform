@@ -68,20 +68,17 @@ def _caller(identity: dict[str, Any], plan: dict[str, Any]) -> dict[str, str]:
     return caller
 
 
-def run_operation(
+def prepare_operation(
     plan_path: Path,
     plan_sha256: str,
     principal_arn: str,
-    content: bytes,
     *,
     input_path: Path,
     writer_receipt: Path,
     writer_receipt_sha256: str,
     output: Path,
-    now: Callable[[], float] = time.monotonic,
-    pause: Callable[[float], None] = time.sleep,
-) -> dict[str, Any]:
-    """No credential discovery, role refresh, second submission or query recovery loop."""
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate local inputs/output without credentials, SDKs or a Linux runtime."""
     plan = load_plan(plan_path, plan_sha256)
     identity_plan = reader_plan(plan_path, plan_sha256, principal_arn)
     check_inputs(plan, input_path, writer_receipt, writer_receipt_sha256)
@@ -100,6 +97,32 @@ def run_operation(
         raise ValueError(
             "Keep fresh artifacts output outside input, receipt, plan and frozen release folders"
         )
+    return plan, identity_plan
+
+
+def run_operation(
+    plan_path: Path,
+    plan_sha256: str,
+    principal_arn: str,
+    content: bytes,
+    *,
+    input_path: Path,
+    writer_receipt: Path,
+    writer_receipt_sha256: str,
+    output: Path,
+    now: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """No credential discovery, role refresh, second submission or query recovery loop."""
+    plan, identity_plan = prepare_operation(
+        plan_path,
+        plan_sha256,
+        principal_arn,
+        input_path=input_path,
+        writer_receipt=writer_receipt,
+        writer_receipt_sha256=writer_receipt_sha256,
+        output=output,
+    )
     if os.name != "posix" or not Path(WORKER_PYTHON).is_file():
         raise ValueError("Use the existing Linux Docker analytics/reader runtime")
     verified_jars()
