@@ -24,7 +24,7 @@ locals {
       {
         Sid       = "RemoveQueryResultsAndUploads"
         Effect    = "Allow"
-        Action    = ["s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]
+        Action    = ["s3:DeleteObject", "s3:GetObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]
         Resource  = "arn:aws:s3:::${local.bucket_names["results"]}/queries/*"
         Condition = local.same_bucket_owner
       },
