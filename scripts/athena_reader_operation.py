@@ -15,7 +15,8 @@ from athena_reader import READER_SECONDS, WORKER_PYTHON, ReaderProcess
 from athena_reader_session import READER_REQUIRED_SECONDS, reader_credentials, reader_plan
 from athena_reader_worker import verified_jars
 from athena_runner import check_inputs, load_plan, run_trial
-from aws_login_bridge import BridgeError, TemporaryCredentials
+from aws_login_bridge import BridgeError
+from aws_role_session import LifetimeClient
 
 READ_SECONDS = 90
 QUERY_SECONDS = WATCH_SECONDS + STOP_SECONDS + 180
@@ -30,25 +31,6 @@ CALL_SECONDS = {
     },
     "s3": {"head_object": READ_SECONDS, "get_object": READ_SECONDS},
 }
-
-
-class _LifetimeClient:
-    """Check at invocation, including when a caller has retained a bound method."""
-
-    def __init__(self, client: Any, snapshot: TemporaryCredentials, service: str) -> None:
-        self._client = client
-        self._snapshot = snapshot
-        self._calls = CALL_SECONDS[service]
-
-    def __getattr__(self, name: str) -> Any:
-        if name not in self._calls:
-            raise AttributeError(name)
-
-        def invoke(**kwargs: Any) -> Any:
-            self._snapshot.require_operation(self._calls[name])
-            return getattr(self._client, name)(**kwargs)
-
-        return invoke
 
 
 def _caller(identity: dict[str, Any], plan: dict[str, Any]) -> dict[str, str]:
@@ -132,7 +114,7 @@ def run_operation(
         snapshot.require_operation(READER_REQUIRED_SECONDS)
         with query_resources(snapshot=snapshot, include_results=True) as resources:
             clients = {
-                service: _LifetimeClient(client, snapshot, service)
+                service: LifetimeClient(client, snapshot, CALL_SECONDS[service])
                 for service, client in resources.clients.items()
             }
             caller = _caller(clients["sts"].get_caller_identity(), identity_plan)

@@ -12,6 +12,25 @@ SESSION_SECONDS = 3600
 SOURCE_REQUIRED_SECONDS = 120
 
 
+class LifetimeClient:
+    """Check remaining lifetime at each allowed call; raw-client cleanup stays with its owner."""
+
+    def __init__(self, client: Any, snapshot: TemporaryCredentials, calls: dict[str, int]) -> None:
+        self._client = client
+        self._snapshot = snapshot
+        self._calls = dict(calls)
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in self._calls:
+            raise AttributeError(name)
+
+        def invoke(**kwargs: Any) -> Any:
+            self._snapshot.require_operation(self._calls[name])
+            return getattr(self._client, name)(**kwargs)
+
+        return invoke
+
+
 class STSClient(Protocol):
     def get_caller_identity(self, **kwargs: Any) -> dict[str, Any]: ...
     def assume_role(self, **kwargs: Any) -> dict[str, Any]: ...

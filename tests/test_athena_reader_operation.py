@@ -320,7 +320,7 @@ def test_query_client_startup_failure_still_clears_the_scoped_snapshot(case):
 
 def test_cached_call_checks_lifetime_when_invoked_and_unlisted_calls_are_unavailable(case):
     raw = Mock()
-    guarded = operation._LifetimeClient(raw, case.snapshot, "athena")
+    guarded = operation.LifetimeClient(raw, case.snapshot, operation.CALL_SECONDS["athena"])
     submit = guarded.start_query_execution
     case.snapshot.expiration = datetime.now(UTC) + timedelta(seconds=539)
     with pytest.raises(bridge.BridgeError):
