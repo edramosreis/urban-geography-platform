@@ -26,9 +26,12 @@ def prepare(
     *,
     include_job: bool = False,
     operator_principal_arn: str | None = None,
+    cleanup_principal_arn: str | None = None,
 ) -> dict[str, Any]:
     if operator_principal_arn is not None and not include_job:
         raise ValueError("An operator requires --include-job")
+    if cleanup_principal_arn is not None and not include_job:
+        raise ValueError("Cleanup requires --include-job")
     output = output.resolve()
     if output.exists() or not output.name.endswith(".tfvars.json"):
         raise ValueError("Use a fresh private .tfvars.json file")
@@ -60,6 +63,12 @@ def prepare(
         result["glue_operator_principal_arn"] = validate_operator_principal(
             operator_principal_arn, target["account_id"], target["deployment_name"]
         )
+    if cleanup_principal_arn is not None:
+        result["trial_cleanup_principal_arn"] = validate_role_principal(
+            cleanup_principal_arn,
+            target["account_id"],
+            f"arn:aws:iam::{target['account_id']}:role/{target['deployment_name']}-trial-cleanup",
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(result, indent=2) + "\n")
@@ -73,6 +82,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--include-job", action="store_true")
     parser.add_argument("--operator-principal-arn")
+    parser.add_argument("--cleanup-principal-arn")
     args = parser.parse_args()
     result = prepare(
         args.release,
@@ -80,6 +90,7 @@ def main() -> None:
         args.output,
         include_job=args.include_job,
         operator_principal_arn=args.operator_principal_arn,
+        cleanup_principal_arn=args.cleanup_principal_arn,
     )
     print(
         json.dumps(

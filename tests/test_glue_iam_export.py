@@ -169,3 +169,46 @@ def test_operator_rejects_ambiguous_or_unscoped_trust_before_writing(frozen, pri
     with pytest.raises(ValueError, match="same-account IAM role"):
         PREPARE(frozen.path, frozen.pin, output, include_job=True, operator_principal_arn=principal)
     assert not output.parent.exists()
+
+
+@pytest.mark.parametrize("path", ["login", "managed/project/login"])
+def test_cleanup_export_binds_separate_identity_to_the_frozen_job(frozen, path):
+    principal = f"arn:aws:iam::123456789012:role/{path}"
+    output = frozen.path.parent / "cleanup.tfvars.json"
+    result = PREPARE(
+        frozen.path, frozen.pin, output, include_job=True, cleanup_principal_arn=principal
+    )
+    assert result["trial_cleanup_principal_arn"] == principal
+    assert "glue_operator_principal_arn" not in result
+    assert "athena_reader_principal_arn" not in result
+    assert json.loads(output.read_text()) == result
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        "arn:aws:iam::999999999999:role/login",
+        "arn:aws:iam::123456789012:root",
+        "arn:aws:iam::123456789012:user/login",
+        "arn:aws:sts::123456789012:assumed-role/login/session",
+        "arn:aws:iam::123456789012:role/*",
+        "arn:aws:iam::123456789012:role/urban-geo-test-trial-cleanup",
+    ],
+)
+def test_cleanup_invalid_trust_creates_no_output(frozen, principal):
+    output = frozen.path.parent / "private/cleanup.tfvars.json"
+    with pytest.raises(ValueError, match="same-account IAM role"):
+        PREPARE(frozen.path, frozen.pin, output, include_job=True, cleanup_principal_arn=principal)
+    assert not output.parent.exists()
+
+
+def test_cleanup_requires_the_frozen_job_before_export(frozen):
+    output = frozen.path.parent / "private/cleanup.tfvars.json"
+    with pytest.raises(ValueError, match="requires --include-job"):
+        PREPARE(
+            frozen.path,
+            frozen.pin,
+            output,
+            cleanup_principal_arn="arn:aws:iam::123456789012:role/login",
+        )
+    assert not output.parent.exists()

@@ -164,3 +164,18 @@ variable "dbt_view_builder_principal_arn" {
     error_message = "Choose one existing same-account IAM role ARN; no user, root, session ARN, wildcard or builder self-trust."
   }
 }
+
+
+variable "trial_cleanup_principal_arn" {
+  description = "Optional exact same-account role trusted for trial data cleanup/quiescence; null creates no cleanup identity."
+  type        = string
+  default     = null
+  validation {
+    condition = var.trial_cleanup_principal_arn == null ? true : (
+      length(var.trial_cleanup_principal_arn) <= 576 &&
+      can(regex("^arn:aws:iam::${var.aws_account_id}:role/([A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}$", var.trial_cleanup_principal_arn)) &&
+      var.trial_cleanup_principal_arn != "arn:aws:iam::${var.aws_account_id}:role/${var.deployment_name}-trial-cleanup"
+    )
+    error_message = "Choose one existing same-account IAM role ARN; no user, root, session, wildcard or cleanup self-trust."
+  }
+}

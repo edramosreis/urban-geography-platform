@@ -77,3 +77,9 @@ output "dbt_view_builder_role_arn" {
   description = "Optional two-view builder role; creation/assumption and dbt execution need separate approval."
   value       = try(aws_iam_role.dbt_view_builder[0].arn, null)
 }
+
+
+output "trial_cleanup_role_arn" {
+  description = "Optional data cleanup/quiescence role; no infrastructure delete authority or execution approval."
+  value       = try(aws_iam_role.trial_cleanup[0].arn, null)
+}
