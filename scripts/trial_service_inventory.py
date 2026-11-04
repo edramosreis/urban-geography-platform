@@ -34,6 +34,30 @@ class AthenaClient(Protocol):
     def get_query_execution(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
+def workgroup_observation(response: dict[str, Any], scope: dict[str, Any]) -> dict[str, Any]:
+    owner = scope["target"]["account_id"]
+    expected = scope["expected_services"]["workgroup"]
+    results = "s3://" + scope["buckets"]["results"]["name"] + "/queries/"
+    group = response["WorkGroup"]
+    config = group.get("Configuration", {})
+    result = config.get("ResultConfiguration", {})
+    if (
+        group.get("Name") != expected
+        or group.get("State") not in {"ENABLED", "DISABLED"}
+        or config.get("EnforceWorkGroupConfiguration") is not True
+        or result.get("OutputLocation") != results
+        or result.get("ExpectedBucketOwner") != owner
+    ):
+        raise ValueError("Dedicated Athena workgroup identity/configuration differs")
+    return {
+        "name": group["Name"],
+        "state": group["State"],
+        "results_location": results,
+        "expected_bucket_owner": owner,
+        "enforce_workgroup_configuration": True,
+    }
+
+
 def inventory_services(
     glue: GlueClient, athena: AthenaClient, release: Path, pin: str, output: Path
 ) -> dict[str, Any]:
@@ -44,7 +68,6 @@ def inventory_services(
     owner = scope["target"]["account_id"]
     deployment = scope["target"]["deployment_name"]
     warehouse = "s3://" + scope["buckets"]["lake"]["name"] + "/warehouse/"
-    results = "s3://" + scope["buckets"]["results"]["name"] + "/queries/"
     script = (
         "s3://"
         + scope["buckets"]["lake"]["name"]
@@ -191,27 +214,10 @@ def inventory_services(
         stage = "job-runs"
         runs = listing(stage, glue.get_job_runs, {"JobName": expected["job"]}, "JobRuns", job_run)
         stage = "workgroup"
-        group = request(athena.get_work_group, {"WorkGroup": expected["workgroup"]})["WorkGroup"]
-        config = group.get("Configuration", {})
-        result = config.get("ResultConfiguration", {})
-        if (
-            group.get("Name") != expected["workgroup"]
-            or group.get("State") not in {"ENABLED", "DISABLED"}
-            or config.get("EnforceWorkGroupConfiguration") is not True
-            or result.get("OutputLocation") != results
-            or result.get("ExpectedBucketOwner") != owner
-        ):
-            raise ValueError("Dedicated Athena workgroup identity/configuration differs")
-        save(
-            "workgroup.json",
-            {
-                "name": group["Name"],
-                "state": group["State"],
-                "results_location": results,
-                "expected_bucket_owner": owner,
-                "enforce_workgroup_configuration": True,
-            },
+        group = workgroup_observation(
+            request(athena.get_work_group, {"WorkGroup": expected["workgroup"]}), scope
         )
+        save("workgroup.json", group)
         stage = "query-ids"
         ids = listing(
             stage,
@@ -255,7 +261,7 @@ def inventory_services(
             reasons.append("active_athena_queries")
         if any(not row["matches_trial_context"] for row in queries):
             reasons.append("query_context_differs")
-        if group["State"] != "DISABLED":
+        if group["state"] != "DISABLED":
             reasons.append("workgroup_enabled")
         report = {
             "version": 1,
@@ -275,7 +281,7 @@ def inventory_services(
             ),
             "job_runs": runs,
             "queries": queries,
-            "workgroup_state": group["State"],
+            "workgroup_state": group["state"],
             "review_reasons": reasons,
             "catalog_observed": True,
             "query_ownership_verified": False,

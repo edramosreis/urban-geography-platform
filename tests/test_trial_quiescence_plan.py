@@ -169,3 +169,37 @@ def test_other_valid_query_recipe_cannot_be_bound_to_this_trial(case, defect):
     case.evidence = (plans.QueryEvidence(intent, receipt), *case.evidence[1:])
     with pytest.raises(ValueError, match="source differs|writer snapshot"):
         build(case)
+
+
+def test_real_prepared_dbt_parent_records_are_accepted(case, tmp_path, monkeypatch):
+    import sys
+
+    prepare = sys.modules["prepare_dbt_project"]
+    views = sys.modules["dbt_view_plan"]
+    monkeypatch.setattr(prepare, "ARTIFACTS", tmp_path)
+    project = tmp_path / "real-dbt-project"
+    prepare.prepare_project(
+        project,
+        source_schema=case.scope["expected_services"]["database"],
+        snapshot_id=123,
+        source_run_sha256=case.frozen.manifest["identity"]["summary_sha256"],
+    )
+    parent = views.view_build_plan(project, **case.frozen.manifest["identity"]["target"])
+    parent_record = save(tmp_path / "real-parent.json", parent)
+    rows = [case.evidence[0]]
+    for evidence in case.evidence[1:]:
+        intent = json.loads(evidence.intent.path.read_bytes())
+        intent["parent_intent_sha256"] = parent_record.sha256
+        intent_record = save(evidence.intent.path, intent)
+        receipt = json.loads(evidence.receipt.path.read_bytes())
+        receipt["intent_sha256"] = intent_record.sha256
+        rows.append(
+            plans.QueryEvidence(intent_record, save(evidence.receipt.path, receipt), parent_record)
+        )
+    case.evidence = tuple(rows)
+    result = build(case)
+    assert [row["kind"] for row in result["queries"]] == [
+        "fact_select",
+        "grid_proximity",
+        "release_proximity",
+    ]

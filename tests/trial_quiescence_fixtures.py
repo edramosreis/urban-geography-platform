@@ -91,3 +91,87 @@ def make_evidence(frozen, folder):
         value.requests[query_id] = request
     value.evidence = tuple(evidence)
     return value
+
+
+def make_controller_case(frozen, folder, monkeypatch):
+    from unittest.mock import Mock
+
+    from trial_cleanup_fixtures import inventory
+
+    for name in ("trial_cleanup_operation", "trial_quiescence"):
+        if name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
+    controller = sys.modules["trial_quiescence"]
+    value = make_evidence(frozen, folder / "saved")
+    monkeypatch.setattr(inventory, "ARTIFACTS", folder / "artifacts")
+    value.output = folder / "artifacts" / "quiescence"
+    value.controller = controller
+    value.plan = plans.quiescence_plan(frozen.path, frozen.pin, value.job_receipt, value.evidence)
+    value.pin = plans.plan_sha256(value.plan)
+    value.glue = Mock(spec=[*controller.GLUE_CALLS, "close"])
+    value.athena = Mock(spec=[*controller.ATHENA_CALLS, "close"])
+    value.run["JobRunState"] = "RUNNING"
+    value.group["State"] = "ENABLED"
+    value.query_rows = {
+        identity: {
+            "QueryExecutionId": identity,
+            "WorkGroup": value.group["Name"],
+            "QueryExecutionContext": request["QueryExecutionContext"],
+            "Query": request["QueryString"],
+            "Status": {"State": "RUNNING"},
+        }
+        for identity, request in value.requests.items()
+    }
+    value.glue.get_database.return_value = {"Database": value.database}
+    value.glue.get_tables.return_value = {"TableList": value.tables}
+    value.glue.get_job.return_value = {"Job": value.job}
+    value.glue.get_job_runs.return_value = {"JobRuns": [value.run]}
+    value.glue.get_job_run.side_effect = lambda **kw: {"JobRun": value.run}
+    value.athena.get_work_group.side_effect = lambda **kw: {"WorkGroup": value.group}
+    value.athena.list_query_executions.side_effect = lambda **kw: {
+        "QueryExecutionIds": list(value.query_rows)
+    }
+    value.athena.get_query_execution.side_effect = lambda **kw: {
+        "QueryExecution": value.query_rows[kw["QueryExecutionId"]]
+    }
+
+    def disable(**kw):
+        value.group["State"] = "DISABLED"
+        return {}
+
+    def stop_job(**kw):
+        value.run["JobRunState"] = "STOPPED"
+        return {
+            "SuccessfulSubmissions": [{"JobName": value.job["Name"], "JobRunId": value.run["Id"]}],
+            "Errors": [],
+        }
+
+    def stop_query(**kw):
+        value.query_rows[kw["QueryExecutionId"]]["Status"]["State"] = "CANCELLED"
+        return {}
+
+    value.athena.update_work_group.side_effect = disable
+    value.glue.batch_stop_job_run.side_effect = stop_job
+    value.athena.stop_query_execution.side_effect = stop_query
+    value.clock = [0.0]
+    value.now = lambda: value.clock[0]
+    value.pause = lambda seconds: value.clock.__setitem__(0, value.clock[0] + seconds)
+    return value
+
+
+def execute(case):
+    return case.controller.quiesce_services(
+        case.glue,
+        case.athena,
+        case.frozen.path,
+        case.frozen.pin,
+        case.job_receipt,
+        case.evidence,
+        case.pin,
+        case.output,
+        now=case.now,
+        pause=case.pause,
+    )
