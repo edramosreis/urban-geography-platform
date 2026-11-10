@@ -117,3 +117,38 @@ def test_container_argument_paths_are_posix_even_when_constructed_on_windows():
     assert args[args.index("--inventory-plan") + 1] == "/workspace/artifacts/inputs/plan.json"
     assert args[args.index("--output") + 1] == "/workspace/artifacts/output"
     assert not any("\\" in value for value in args)
+
+
+@pytest.mark.parametrize(
+    "field", ["job", "queries", "quiet_receipt", "approved", "paused", "resume"]
+)
+def test_infrastructure_phase_refuses_cleanup_mutation_inputs(frozen, tmp_path, monkeypatch, field):
+    case = make_command_case(frozen, tmp_path, monkeypatch, command.INFRA_PHASE)
+    values = {
+        "job": case.evidence.job,
+        "queries": case.evidence.queries,
+        "quiet_receipt": case.operation.inventory,
+        "approved": case.operation.inventory,
+        "paused": True,
+        "resume": True,
+    }
+    with pytest.raises(ValueError):
+        command.prepare(replace(case.operation, **{field: values[field]}), case.output)
+    assert not case.output.exists()
+    assert all(not c.method_calls for c in case.infrastructure.clients.values())
+
+
+def test_infrastructure_request_binds_source_only_credentials_and_supervisor(
+    frozen, tmp_path, monkeypatch
+):
+    case = make_command_case(frozen, tmp_path, monkeypatch, command.INFRA_PHASE)
+    recipe = command.prepare(case.operation, case.output)["recipe"]
+    assert recipe["credential_mode"] == "source_session"
+    assert recipe["source_required_seconds"] == 600 and recipe["supervisor_seconds"] == 900
+    target = next(
+        t
+        for t in recipe["payload"]["targets"]
+        if t["kind"] == "role" and t["name"].endswith("-glue-writer")
+    )
+    with pytest.raises(ValueError):
+        command.prepare(replace(case.operation, principal=target["arn"]), case.output)

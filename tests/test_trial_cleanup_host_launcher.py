@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from trial_cleanup_command_fixtures import ROOT, command, make_command_case
+from trial_cleanup_command_fixtures import ROOT, command, connect_infrastructure, make_command_case
 from trial_cleanup_fixtures import bridge, make_case, packet
 
 for name in (
@@ -31,8 +31,16 @@ host = sys.modules["trial_cleanup_host_launcher"]
 
 @pytest.fixture(params=command.PHASES)
 def case(frozen, tmp_path, monkeypatch, request, capsys):
-    case = make_command_case(frozen, tmp_path, monkeypatch, request.param)
+    phase = request.param[0] if isinstance(request.param, tuple) else request.param
+    case = make_command_case(frozen, tmp_path, monkeypatch, phase)
+    if isinstance(request.param, tuple):
+        from trial_infrastructure_fixtures import ServiceError
+
+        case.infrastructure.clients["iam"].get_policy.side_effect = ServiceError(
+            "AccessDenied", 403
+        )
     case.prepared = command.prepare(case.operation, case.output)
+    connect_infrastructure(case, monkeypatch)
     auth = tmp_path / "auth"
     auth.mkdir()
     case.auth = make_case(frozen, auth, monkeypatch)
@@ -139,7 +147,11 @@ def test_command_uses_only_readonly_input_mounts_and_one_private_pipe(case):
     assert all(
         str(r.path).startswith("/workspace/artifacts/cleanup-inputs/") for r in mapped.records()
     )
-    assert mapped.queries == () if case.operation.phase == "inventory" else len(mapped.queries) == 3
+    assert (
+        mapped.queries == ()
+        if case.operation.phase in {"inventory", command.INFRA_PHASE}
+        else len(mapped.queries) == 3
+    )
 
 
 def test_success_verifies_saved_records_clears_snapshot_and_cleans_owned_container(case):
@@ -150,6 +162,18 @@ def test_success_verifies_saved_records_clears_snapshot_and_cleans_owned_contain
     case.export.assert_called_once_with("aws", "urban-geo", "123456789012")
     case.cleanup.assert_called_once()
     assert "dummyHostToken" not in (case.output / "launch.json").read_text()
+    expected_seconds = 900 if case.operation.phase == command.INFRA_PHASE else 2100
+    assert (
+        json.loads((case.output / "launch.json").read_bytes())["supervisor_seconds"]
+        == expected_seconds
+    )
+    assert (
+        next(c for c in case.capture.call_args_list if "run" in c.args[0]).kwargs["seconds"]
+        == expected_seconds
+    )
+    if case.operation.phase == command.INFRA_PHASE:
+        assert result["named_infrastructure_absence_observed"]
+        case.auth.factory.assert_not_called()
 
 
 @pytest.mark.parametrize("defect", ["pin", "output", "sdk_overlap", "record"])
@@ -221,3 +245,58 @@ def test_plan_cli_does_not_find_executables_or_export_keys(case, monkeypatch, ca
     value = json.loads(capsys.readouterr().out)
     assert value["mode"] == "plan_only" and not value["credential_exported"]
     assert not case.output.exists() and not case.export.called and not case.capture.called
+
+
+@pytest.mark.parametrize("case", [command.INFRA_PHASE], indirect=True)
+def test_infrastructure_source_needs_600_seconds_before_container_handoff(case):
+    case.credentials.expiration = datetime.now(UTC) + timedelta(seconds=599)
+    with pytest.raises(bridge.BridgeError, match="reconcile_before_retry"):
+        launch(case)
+    assert not any(case.credentials.session_options().values())
+    assert not any("run" in c.args[0] for c in case.capture.call_args_list)
+    case.cleanup.assert_not_called()
+
+
+@pytest.mark.parametrize("case", [command.INFRA_PHASE], indirect=True)
+def test_infrastructure_target_record_tampering_is_rejected_on_host(case):
+    original = case.capture.side_effect
+
+    def tamper(cmd, **kw):
+        value = original(cmd, **kw)
+        if "run" in cmd:
+            (case.output / "attempt/inspection/target-00.json").write_text("{}")
+        return value
+
+    case.capture.side_effect = tamper
+    with pytest.raises(bridge.BridgeError, match="reconcile_before_retry"):
+        launch(case)
+    assert not any(case.credentials.session_options().values())
+    case.cleanup.assert_called_once()
+
+
+@pytest.mark.parametrize("case", [(command.INFRA_PHASE, "denied")], indirect=True)
+def test_infrastructure_review_required_reply_is_preserved_and_cli_exits_unsuccessfully(
+    case, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "trial_cleanup_host_launcher.py",
+            *command.arguments(case.operation, case.output),
+            "--sdk-root",
+            str(case.sdk),
+            "--request-sha256",
+            case.prepared["request_sha256"],
+            "--execute",
+        ],
+    )
+    monkeypatch.setattr(host.shutil, "which", lambda name: name)
+    with pytest.raises(SystemExit) as stopped:
+        host.main()
+    assert stopped.value.code == 2
+    value = json.loads(capsys.readouterr().out)
+    assert value["status"] == "phase_completed" and value["requires_review"]
+    assert not value["named_infrastructure_absence_observed"] and not value["data_cleanup_observed"]
+    assert value["reconcile_before_retry"] and not any(case.credentials.session_options().values())
+    case.cleanup.assert_called_once()

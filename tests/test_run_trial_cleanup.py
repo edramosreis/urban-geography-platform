@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from trial_cleanup_command_fixtures import ROOT, command, make_command_case
+from trial_cleanup_command_fixtures import ROOT, command, connect_infrastructure, make_command_case
 from trial_cleanup_fixtures import make_case, packet
 
 for name in ("trial_data_cleanup", "trial_cleanup_receipt", "run_trial_cleanup"):
@@ -25,6 +25,7 @@ receipts = sys.modules["trial_cleanup_receipt"]
 def case(frozen, tmp_path, monkeypatch, request):
     case = make_command_case(frozen, tmp_path, monkeypatch, request.param)
     case.prepared = command.prepare(case.operation, case.output)
+    connect_infrastructure(case, monkeypatch)
     (tmp_path / "auth").mkdir()
     case.auth = make_case(frozen, tmp_path / "auth", monkeypatch)
     for name in ("trial_cleanup_operation", "trial_quiescence", "trial_data_cleanup"):
@@ -76,8 +77,16 @@ def test_each_phase_runs_through_scoped_clients_and_produces_verifiable_fixed_pr
     assert not proof["requires_review"]
     if case.operation.phase == "prepare-data":
         assert len(proof["prepared_plan_sha256"]) == 64
-    assert all(not any(c.session_options().values()) for c in case.auth.credentials)
-    assert all(c.close.call_count == 1 for c in case.auth.clients)
+    if case.operation.phase == command.INFRA_PHASE:
+        assert len(case.infrastructure_snapshots) == 6
+        assert all(s is case.infrastructure_snapshots[0] for s in case.infrastructure_snapshots)
+        assert not any(case.infrastructure_snapshots[0].session_options().values())
+        assert all(c.close.call_count == 1 for c in case.infrastructure.clients.values())
+        assert proof["named_infrastructure_absence_observed"]
+        case.auth.factory.assert_not_called()
+    else:
+        assert all(not any(c.session_options().values()) for c in case.auth.credentials)
+        assert all(c.close.call_count == 1 for c in case.auth.clients)
     assert all("dummyLoginToken" not in p.read_text() for p in case.output.rglob("*.json"))
 
 
@@ -230,3 +239,32 @@ def test_transport_reply_schema_is_strict(mutation):
         value["proof_sha256"] = "invalid"
     with pytest.raises(ValueError):
         receipts.verify_reply(json.dumps(value).encode(), "a" * 64, "inventory")
+
+
+@pytest.mark.parametrize("case", [command.INFRA_PHASE], indirect=True)
+def test_infrastructure_denied_reads_complete_as_review_required_without_cleanup_role_assumption(
+    case, monkeypatch, capsys
+):
+    from trial_infrastructure_fixtures import ServiceError
+
+    case.infrastructure.clients["iam"].get_policy.side_effect = ServiceError("AccessDenied", 403)
+    value = execute(case, monkeypatch, capsys)
+    proof = receipts.load_completion(case.output, case.operation, case.prepared, value)
+    assert value["status"] == "phase_completed" and proof["requires_review"]
+    assert not proof["named_infrastructure_absence_observed"] and not proof["data_cleanup_observed"]
+    case.auth.factory.assert_not_called()
+    assert len(case.infrastructure_snapshots) == 6
+    assert not any(case.infrastructure_snapshots[0].session_options().values())
+
+
+@pytest.mark.parametrize("case", [command.INFRA_PHASE], indirect=True)
+def test_infrastructure_wrong_caller_closes_source_clients_without_a_final_proof(
+    case, monkeypatch, capsys
+):
+    case.infrastructure.clients["sts"].get_caller_identity.return_value["Account"] = "000000000000"
+    value = execute(case, monkeypatch, capsys)
+    assert value["status"] == "operation_failed" and value["proof_sha256"] is None
+    assert not (case.output / receipts.PROOF).exists()
+    assert all(c.close.call_count == 1 for c in case.infrastructure.clients.values())
+    assert not any(case.infrastructure_snapshots[0].session_options().values())
+    case.auth.factory.assert_not_called()

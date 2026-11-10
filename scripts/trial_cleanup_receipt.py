@@ -8,7 +8,7 @@ from typing import Any
 import trial_service_inventory as services
 from athena_control import canonical, write_once
 from aws_login_bridge import BridgeError, decode
-from trial_cleanup_command import Operation
+from trial_cleanup_command import INFRA_PHASE, Operation
 from trial_cleanup_plan import (
     MAX_ACTIONS,
     MAX_CALLS,
@@ -19,6 +19,7 @@ from trial_cleanup_plan import (
     require_quiet,
 )
 from trial_cleanup_session import load_cleanup_plan
+from trial_infrastructure_receipt import record_names, validate_completion
 from trial_quiescence_plan import plan_sha256
 
 REPLY_BYTES = 4096
@@ -93,7 +94,9 @@ def _check_inventory(report: dict[str, Any], kind: str, scope: dict[str, Any]) -
         )
 
 
-def _layout(op: Operation) -> tuple[list[str], dict[str, str]]:
+def _layout(op: Operation, prepared: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
+    if op.phase == INFRA_PHASE:
+        return record_names(prepared["recipe"]["payload"]), {}
     names = ["session-complete.json"]
     inventories: dict[str, str]
     if op.phase == "inventory":
@@ -133,6 +136,8 @@ def _validate(
     hashes: dict[str, str],
     inventories: dict[str, str],
 ) -> dict[str, Any]:
+    if op.phase == INFRA_PHASE:
+        return validate_completion(prepared["recipe"]["payload"], records, hashes)
     scope = prepared["scope"]
     for prefix, kind in inventories.items():
         report, plan = (records[prefix + "/" + name + ".json"] for name in ("inventory", "plan"))
@@ -376,11 +381,13 @@ def _collect(output: Path, op: Operation, prepared: dict[str, Any]) -> dict[str,
     for record in op.records():
         _, actual = read_record(record.path)
         _require(actual, record.sha256)
-    names, inventories = _layout(op)
+    names, inventories = _layout(op, prepared)
     records, hashes = {}, {}
     for name in names:
         limit = (
-            4 * 1024 * 1024
+            SMALL
+            if op.phase == INFRA_PHASE
+            else 4 * 1024 * 1024
             if name.endswith("/s3/inventory.json") or name == "s3/inventory.json"
             else SMALL
             if not name.endswith("/inventory.json")

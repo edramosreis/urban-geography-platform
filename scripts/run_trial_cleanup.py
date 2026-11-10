@@ -5,10 +5,11 @@ import json
 import sys
 
 from aws_login_bridge import MAX_BYTES
-from trial_cleanup_command import add_arguments, checked, from_arguments, prepare
+from trial_cleanup_command import INFRA_PHASE, add_arguments, checked, from_arguments, prepare
 from trial_cleanup_operation import run_inventory
 from trial_cleanup_receipt import reply, save_completion
 from trial_data_cleanup import run_data_cleanup
+from trial_infrastructure_operation import run_absence
 from trial_quiescence import run_quiescence
 from trial_quiescence_plan import plan_sha256
 
@@ -55,7 +56,16 @@ def main() -> None:
             op.principal,
             content,
         )
-        if op.phase == "inventory":
+        if op.phase == INFRA_PHASE:
+            run_absence(
+                op.release,
+                op.release_pin,
+                op.principal,
+                plan_sha256(prepared["recipe"]["payload"]),
+                content,
+                args.output,
+            )
+        elif op.phase == "inventory":
             run_inventory(*common, output=args.output, include_services=True)
         elif op.phase == "quiesce":
             run_quiescence(

@@ -13,6 +13,7 @@ import aws_login_bridge as bridge
 from athena_control import canonical, write_once
 from aws_role_session import SOURCE_REQUIRED_SECONDS
 from trial_cleanup_command import (
+    INFRA_PHASE,
     Operation,
     add_arguments,
     arguments,
@@ -151,7 +152,9 @@ def launch(
                 "request_sha256": pin,
                 "container": name,
                 "image": image,
-                "supervisor_seconds": SUPERVISOR_SECONDS,
+                "supervisor_seconds": prepared["recipe"].get(
+                    "supervisor_seconds", SUPERVISOR_SECONDS
+                ),
             }
         ),
     )
@@ -159,13 +162,15 @@ def launch(
     attempted = False
     try:
         credentials = bridge.export_login(aws, profile, prepared["identity"]["owner"])
-        credentials.require_operation(SOURCE_REQUIRED_SECONDS)
+        credentials.require_operation(
+            prepared["recipe"].get("source_required_seconds", SOURCE_REQUIRED_SECONDS)
+        )
         attempted = True
         content = bridge.capture(
             command,
             content=bridge.envelope(credentials, prepared["identity"]["owner"]),
             maximum=REPLY_BYTES,
-            seconds=SUPERVISOR_SECONDS,
+            seconds=prepared["recipe"].get("supervisor_seconds", SUPERVISOR_SECONDS),
             environment=environment,
         )
         value = verify_reply(content, pin, op.phase)
@@ -175,7 +180,7 @@ def launch(
             else load_completion(output / "attempt", op, prepared, value)
         )
         review = proof is None or proof["requires_review"]
-        return {
+        result = {
             "status": value["status"],
             "phase": op.phase,
             "request_sha256": pin,
@@ -186,6 +191,11 @@ def launch(
             "prepared_plan_sha256": None if proof is None else proof["prepared_plan_sha256"],
             "reconcile_before_retry": review,
         }
+        if op.phase == INFRA_PHASE:
+            result["named_infrastructure_absence_observed"] = (
+                False if proof is None else proof["named_infrastructure_absence_observed"]
+            )
+        return result
     except Exception:
         raise bridge.BridgeError("cleanup_handoff_failed_reconcile_before_retry") from None
     finally:
@@ -214,7 +224,9 @@ def main() -> None:
                         "request_sha256": prepared["request_sha256"],
                         "region": prepared["scope"]["target"]["region"],
                         "credential_exported": False,
-                        "supervisor_seconds": SUPERVISOR_SECONDS,
+                        "supervisor_seconds": prepared["recipe"].get(
+                            "supervisor_seconds", SUPERVISOR_SECONDS
+                        ),
                     }
                 )
             )

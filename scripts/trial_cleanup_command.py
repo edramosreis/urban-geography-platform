@@ -10,10 +10,15 @@ from athena_control import canonical
 from aws_login_bridge import read_record
 from trial_cleanup_operation import prepare_operation
 from trial_cleanup_plan import CleanupEvidence, context, load_approved, require_paused
+from trial_cleanup_session import load_cleanup_plan
+from trial_infrastructure_operation import REQUIRED_SECONDS as INFRA_SOURCE_SECONDS
+from trial_infrastructure_plan import absence_plan
 from trial_quiescence import check_output
 from trial_quiescence_plan import QueryEvidence, Record, evidence_records, quiescence_plan
 
-PHASES = ("inventory", "quiesce", "prepare-data", "delete-data")
+INFRA_PHASE = "inspect-infrastructure"
+INFRA_SUPERVISOR_SECONDS = 900
+PHASES = ("inventory", "quiesce", "prepare-data", "delete-data", INFRA_PHASE)
 
 
 @dataclass(frozen=True)
@@ -54,17 +59,26 @@ def prepare(operation: Operation, output: Path) -> dict[str, Any]:
         or (op.resume and op.phase != "delete-data")
         or ((op.approved is not None) != (op.phase == "delete-data"))
         or (
-            op.phase in {"inventory", "quiesce"}
+            op.phase in {"inventory", "quiesce", INFRA_PHASE}
             and (op.quiet_receipt is not None or op.quiet_completion is not None)
         )
-        or (op.phase == "inventory" and (op.job is not None or op.queries or op.paused))
+        or (
+            op.phase in {"inventory", INFRA_PHASE}
+            and (op.job is not None or op.queries or op.paused)
+        )
     ):
         raise ValueError("Cleanup phase and explicit evidence/options disagree")
-    if op.phase != "inventory":
+    if op.phase not in {"inventory", INFRA_PHASE}:
         require_paused(op.paused)
-    scope, identity = prepare_operation(
-        op.release, op.release_pin, op.inventory.path, op.inventory.sha256, op.principal, output
-    )
+    if op.phase == INFRA_PHASE:
+        scope = load_cleanup_plan(
+            op.release, op.release_pin, op.inventory.path, op.inventory.sha256
+        )
+        identity = {"owner": scope["target"]["account_id"], "source_role_arn": op.principal}
+    else:
+        scope, identity = prepare_operation(
+            op.release, op.release_pin, op.inventory.path, op.inventory.sha256, op.principal, output
+        )
     check_output(op.release, op.job, op.queries, output)
     for record in op.records():
         _, pin = read_record(record.path)
@@ -73,7 +87,9 @@ def prepare(operation: Operation, output: Path) -> dict[str, Any]:
         protected, destination = record.path.parent.resolve(), output.resolve()
         if destination.is_relative_to(protected) or protected.is_relative_to(destination):
             raise ValueError("Keep cleanup output separate from every input record")
-    if op.phase == "inventory":
+    if op.phase == INFRA_PHASE:
+        payload = absence_plan(op.release, op.release_pin, op.principal)
+    elif op.phase == "inventory":
         payload = {"scope": scope, "include_services": True}
     elif op.phase == "quiesce":
         payload = quiescence_plan(op.release, op.release_pin, op.job, op.queries)
@@ -92,6 +108,12 @@ def prepare(operation: Operation, output: Path) -> dict[str, Any]:
         "coordinator_paused_assertion": op.paused,
         "resume": op.resume,
     }
+    if op.phase == INFRA_PHASE:
+        recipe.update(
+            credential_mode="source_session",
+            source_required_seconds=INFRA_SOURCE_SECONDS,
+            supervisor_seconds=INFRA_SUPERVISOR_SECONDS,
+        )
     return {
         "recipe": recipe,
         "request_sha256": hashlib.sha256(canonical(recipe)).hexdigest(),
