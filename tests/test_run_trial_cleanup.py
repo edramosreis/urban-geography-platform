@@ -186,6 +186,37 @@ def test_incomplete_cleanup_is_transportable_but_cannot_be_forged_as_absent(
         receipts.save_completion(case.output, case.operation, case.prepared)
 
 
+@pytest.mark.parametrize("case", ["delete-data"], indirect=True)
+def test_explicit_resume_uses_a_new_request_pin_and_only_the_remaining_selection(
+    case, tmp_path, monkeypatch, capsys
+):
+    from dataclasses import replace
+
+    from trial_data_cleanup_fixtures import ServiceError
+
+    original = case.s3.delete_object.side_effect
+    case.s3.delete_object.side_effect = ServiceError("AccessDenied", 403)
+    first = execute(case, monkeypatch, capsys)
+    assert receipts.load_completion(case.output, case.operation, case.prepared, first)[
+        "requires_review"
+    ]
+    case.s3.delete_object.side_effect = original
+    auth = tmp_path / "resume-auth"
+    auth.mkdir()
+    case.auth = make_case(case.frozen, auth, monkeypatch)
+    case.operation = replace(case.operation, resume=True)
+    case.output = case.output.with_name("explicit-resume")
+    previous_pin = case.prepared["request_sha256"]
+    case.prepared = command.prepare(case.operation, case.output)
+    assert previous_pin != case.prepared["request_sha256"]
+    case.stdin.buffer = io.BytesIO(packet())
+    value = execute(case, monkeypatch, capsys)
+    proof = receipts.load_completion(case.output, case.operation, case.prepared, value)
+    assert proof["data_cleanup_observed"] and not proof["requires_review"]
+    receipt = json.loads((case.output / "attempt/receipt.json").read_bytes())
+    assert receipt["resume"] and receipt["actions_attempted"] == 3
+
+
 @pytest.mark.parametrize("mutation", ["extra", "boolean_version", "wrong_phase", "bad_hash"])
 def test_transport_reply_schema_is_strict(mutation):
     value = receipts.reply("a" * 64, "inventory", "b" * 64)

@@ -9,7 +9,12 @@ from unittest.mock import Mock
 
 from trial_quiescence_fixtures import ROOT, execute, make_controller_case, save
 
-for name in ("dbt_view_catalog", "dbt_view_capture", "trial_cleanup_operation", "trial_cleanup_plan"):
+for name in (
+    "dbt_view_catalog",
+    "dbt_view_capture",
+    "trial_cleanup_operation",
+    "trial_cleanup_plan",
+):
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
         module = importlib.util.module_from_spec(spec)

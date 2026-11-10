@@ -59,6 +59,9 @@ def _check_inventory(report: dict[str, Any], kind: str, scope: dict[str, Any]) -
             len(report[key]) > services.MAX_ITEMS for key in ("relations", "job_runs", "queries")
         ):
             raise BridgeError("cleanup_inventory_ceiling_differs")
+        for key in ("relations", "job_runs", "queries"):
+            if len({row["id"] for row in report[key]}) != len(report[key]):
+                raise BridgeError("cleanup_inventory_identity_repeated")
         for row in report["relations"]:
             inside = row["id"] in scope["expected_services"]["tables"]
             wanted = "EXTERNAL_TABLE" if row["id"] == "building_proximity" else "VIRTUAL_VIEW"
@@ -90,7 +93,7 @@ def _check_inventory(report: dict[str, Any], kind: str, scope: dict[str, Any]) -
         )
 
 
-def _layout(op: Operation, prepared: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
+def _layout(op: Operation) -> tuple[list[str], dict[str, str]]:
     names = ["session-complete.json"]
     inventories: dict[str, str]
     if op.phase == "inventory":
@@ -293,7 +296,9 @@ def _validate(
             seen.add(action_id)
         _require(receipt["actions_attempted"], len(seen))
         if (
-            not len(seen) <= receipt["actions_selected"] <= MAX_ACTIONS
+            type(receipt["actions_selected"]) is not int
+            or type(receipt["api_calls"]) is not int
+            or not len(seen) <= receipt["actions_selected"] <= MAX_ACTIONS
             or not 0 <= receipt["api_calls"] <= MAX_CALLS
         ):
             raise BridgeError("cleanup_attempt_ceiling_differs")
@@ -371,7 +376,7 @@ def _collect(output: Path, op: Operation, prepared: dict[str, Any]) -> dict[str,
     for record in op.records():
         _, actual = read_record(record.path)
         _require(actual, record.sha256)
-    names, inventories = _layout(op, prepared)
+    names, inventories = _layout(op)
     records, hashes = {}, {}
     for name in names:
         limit = (

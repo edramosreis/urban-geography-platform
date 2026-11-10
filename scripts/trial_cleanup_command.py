@@ -171,22 +171,26 @@ def from_arguments(args: argparse.Namespace) -> Operation:
     )
 
 
-def arguments(op: Operation, output: Path) -> list[str]:
+def arguments(op: Operation, output: Path, *, posix: bool = False) -> list[str]:
     """Explicit fixed flags only; paths are never discovered from receipt contents."""
+
+    def path(value: Path) -> str:
+        return value.as_posix() if posix else str(value)
+
     result = [
         "--phase",
         op.phase,
         "--release",
-        str(op.release),
+        path(op.release),
         "--release-sha256",
         op.release_pin,
         "--inventory-plan",
-        str(op.inventory.path),
+        path(op.inventory.path),
         op.inventory.sha256,
         "--source-role-arn",
         op.principal,
         "--output",
-        str(output),
+        path(output),
     ]
     for flag, value in [
         ("job-receipt", op.job),
@@ -195,17 +199,17 @@ def arguments(op: Operation, output: Path) -> list[str]:
         ("approved-plan", op.approved),
     ]:
         if value is not None:
-            result += ["--" + flag, str(value.path), value.sha256]
+            result += ["--" + flag, path(value.path), value.sha256]
     for query in op.queries:
         result += [
             "--fact-query" if query.parent is None else "--view-query",
-            str(query.intent.path),
+            path(query.intent.path),
             query.intent.sha256,
-            str(query.receipt.path),
+            path(query.receipt.path),
             query.receipt.sha256,
         ]
         if query.parent is not None:
-            result += [str(query.parent.path), query.parent.sha256]
+            result += [path(query.parent.path), query.parent.sha256]
     if op.paused:
         result.append("--coordinator-paused")
     if op.resume:

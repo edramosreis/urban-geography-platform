@@ -100,3 +100,20 @@ def test_conflicting_phase_options_fail_closed(frozen, tmp_path, monkeypatch, de
     with pytest.raises(ValueError):
         command.prepare(op, case.output)
     assert not case.output.exists() and not case.s3.method_calls
+
+
+def test_container_argument_paths_are_posix_even_when_constructed_on_windows():
+    from pathlib import PureWindowsPath
+
+    op = command.Operation(
+        PureWindowsPath("/workspace/artifacts/frozen-release"),
+        "a" * 64,
+        command.Record(PureWindowsPath("/workspace/artifacts/inputs/plan.json"), "b" * 64),
+        "arn:aws:iam::123456789012:role/login",
+        "inventory",
+    )
+    args = command.arguments(op, PureWindowsPath("/workspace/artifacts/output"), posix=True)
+    assert args[args.index("--release") + 1] == "/workspace/artifacts/frozen-release"
+    assert args[args.index("--inventory-plan") + 1] == "/workspace/artifacts/inputs/plan.json"
+    assert args[args.index("--output") + 1] == "/workspace/artifacts/output"
+    assert not any("\\" in value for value in args)
