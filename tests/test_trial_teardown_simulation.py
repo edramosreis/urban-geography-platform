@@ -1,19 +1,11 @@
 """Synthetic teardown state: exact scope, owned work and gated model removal."""
 
-import importlib.util
 import sys
 from dataclasses import replace
 
 import pytest
-from trial_cleanup_command_fixtures import ROOT, command
 from trial_cleanup_fixtures import PRINCIPAL
-
-spec = importlib.util.spec_from_file_location(
-    "trial_teardown_simulation", ROOT / "scripts/trial_teardown_simulation.py"
-)
-model = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = model
-spec.loader.exec_module(model)
+from trial_teardown_fixtures import command, model
 
 
 @pytest.fixture
