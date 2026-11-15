@@ -3,13 +3,15 @@
 import re
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 from aws_login_bridge import BridgeError, TemporaryCredentials, receive, temporary
 
 SESSION_SECONDS = 3600
 SOURCE_REQUIRED_SECONDS = 120
+EXPIRATION_CLOCK_ALLOWANCE_SECONDS = 1
 
 
 class LifetimeClient:
@@ -97,7 +99,26 @@ def parse_assumed_credentials(
         raise BridgeError("role_expiration_invalid")
     now = datetime.now(UTC)
     if (expires - now).total_seconds() > SESSION_SECONDS:
-        raise BridgeError("role_expiration_exceeds_requested_duration")
+        # STS timestamps have second precision. Accept only a one-second local
+        # discrepancy corroborated by the TLS response's UTC Date, then shorten
+        # the local expiry; neither the requested session nor admission grows.
+        try:
+            stamp = response["ResponseMetadata"]["HTTPHeaders"]["date"]
+            if not isinstance(stamp, str) or len(stamp) > 64:
+                raise ValueError("Invalid server date")
+            server = parsedate_to_datetime(stamp)
+            server_offset = server.utcoffset()
+            corroborated = (
+                server_offset is not None
+                and server_offset.total_seconds() == 0
+                and 0 <= (server - now).total_seconds() <= EXPIRATION_CLOCK_ALLOWANCE_SECONDS
+                and 0 <= (expires - server).total_seconds() <= SESSION_SECONDS
+            )
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+            corroborated = False
+        if not corroborated:
+            raise BridgeError("role_expiration_exceeds_requested_duration")
+        expires = now + timedelta(seconds=SESSION_SECONDS)
     # Preserve any provider AccountId so the ordinary envelope check cannot mask a mismatch.
     value = {**record, "Version": 1, "Expiration": expires.isoformat()}
     result = temporary(value, now)

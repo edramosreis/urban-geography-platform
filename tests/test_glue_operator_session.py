@@ -412,3 +412,69 @@ def test_shared_factory_cannot_open_another_service(monkeypatch, service):
     finally:
         credentials.clear()
     imported.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "remaining,server_date,accepted",
+    [
+        (3600.2, "Sat, 14 Nov 2026 23:08:54 GMT", True),
+        (3601, "Sat, 14 Nov 2026 23:08:55 GMT", True),
+        (3601.000001, "Sat, 14 Nov 2026 23:08:55 GMT", False),
+        (3600.2, "Sat, 14 Nov 2026 23:08:56 GMT", False),
+        (3600.2, "Sat, 14 Nov 2026 23:08:53 GMT", False),
+        (3600.2, "invalid", False),
+        (3600.2, "Sat, 14 Nov 2026 23:08:54", False),
+        (3600.2, "Sun, 15 Nov 2026 00:08:54 +0100", False),
+        (3600.2, None, False),
+        (3600.2, 123, False),
+        (3600.2, "x" * 65, False),
+        (1199.999, "Sat, 14 Nov 2026 23:08:54 GMT", False),
+    ],
+)
+def test_server_date_corroborates_only_small_rounding_and_local_expiry_is_capped(
+    case, monkeypatch, remaining, server_date, accepted
+):
+    # The first row reproduces the observed 0.2-second apparent excess. The
+    # boundary rows use an integral client second so the header can be exactly 1s ahead.
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            microsecond = 0 if remaining in {3601, 3601.000001} else 800000
+            second = 54 if remaining in {3601, 3601.000001} else 53
+            return cls(2026, 11, 14, 23, 8, second, microsecond, tzinfo=UTC)
+
+    now = Clock.now(UTC)
+    monkeypatch.setattr(roles, "datetime", Clock)
+    case.raw["Expiration"] = now + timedelta(seconds=remaining)
+    case.response["ResponseMetadata"] = {"HTTPHeaders": {"date": server_date}}
+    plan = session.operator_plan(case.frozen.path, case.frozen.pin, PRINCIPAL)
+    if accepted:
+        credentials, identity = roles.parse_assumed_credentials(case.response, plan, NAME)
+        try:
+            assert (credentials.expiration - now).total_seconds() == 3600
+            assert identity == case.clients[1].get_caller_identity.return_value
+            assert case.raw["Expiration"] == now + timedelta(seconds=remaining)
+        finally:
+            credentials.clear()
+    else:
+        with pytest.raises(bridge.BridgeError):
+            roles.parse_assumed_credentials(case.response, plan, NAME)
+
+
+@pytest.mark.parametrize("metadata", [{}, {"HTTPHeaders": None}, None, {"HTTPHeaders": {}}])
+def test_uncorroborated_excess_still_fails_before_target_client(case, monkeypatch, metadata):
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 14, 23, 8, 53, 800000, tzinfo=UTC)
+
+    monkeypatch.setattr(roles, "datetime", Clock)
+    case.raw["Expiration"] = Clock.now(UTC) + timedelta(seconds=3600.5)
+    case.response["ResponseMetadata"] = metadata
+    with pytest.raises(bridge.BridgeError, match="role_expiration_exceeds_requested_duration"):
+        with acquire(case):
+            pytest.fail("Uncorroborated credentials must not be yielded")
+    assert len(case.credentials) == 1
+    case.clients[0].close.assert_called_once()
+    case.clients[1].get_caller_identity.assert_not_called()
+    assert case.response == {} and case.raw == {}
