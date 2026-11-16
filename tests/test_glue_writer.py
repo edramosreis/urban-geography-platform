@@ -55,8 +55,12 @@ def execute(prepared, factory, **changes):
     return writer.run_writer(path, pin, **options)
 
 
-def test_writer_reports_verified_input_and_target_and_stops_its_session(prepared, monkeypatch):
+@pytest.mark.parametrize("version", ["3.5.6", "3.5.6-amzn-1"])
+def test_writer_reports_verified_input_and_target_and_stops_its_session(
+    prepared, monkeypatch, version
+):
     spark = session(prepared[2])
+    spark.version = version
     calls = []
 
     def publish(observed, run, **target):
@@ -131,6 +135,33 @@ def test_wrong_runtime_never_publishes_and_is_stopped(prepared, monkeypatch, def
     monkeypatch.setattr(writer, "publish_facts", lambda *a, **k: pytest.fail("No publication"))
     with pytest.raises(ValueError, match="Spark"):
         execute(prepared, lambda: spark)
+    spark.stop.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "3.5.5",
+        "3.5.7",
+        "3.5.6-amzn-0",
+        "3.5.6-amzn-2",
+        "3.5.6-amzn-1-extra",
+        "3.5.6\n",
+        "3.5.60",
+        "4.0.0",
+    ],
+)
+def test_unverified_spark_build_never_publishes_and_reports_observed_version(
+    prepared, monkeypatch, version
+):
+    spark = session(prepared[2])
+    spark.version = version
+    publication = Mock()
+    monkeypatch.setattr(writer, "publish_facts", publication)
+    with pytest.raises(ValueError, match="supported Spark 3.5.6") as error:
+        execute(prepared, lambda: spark)
+    assert f"observed {version!r}" in str(error.value)
+    publication.assert_not_called()
     spark.stop.assert_called_once()
 
 

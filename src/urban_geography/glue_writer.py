@@ -14,6 +14,8 @@ from urban_geography.glue_input import InputPlan, load_prepared_input
 from urban_geography.ingest import digest
 from urban_geography.lakehouse import FACT_TYPES, publish_facts
 
+SUPPORTED_SPARK_VERSIONS = ("3.5.6", "3.5.6-amzn-1")
+
 
 def run_writer(
     input_path: Path,
@@ -48,8 +50,10 @@ def run_writer(
     prepared = load_prepared_input(input_path, expected_summary_sha256)
     spark = session_factory()
     try:
-        if spark.version != "3.5.6":
-            raise ValueError("Writer requires the pinned Spark 3.5.6 runtime")
+        if spark.version not in SUPPORTED_SPARK_VERSIONS:
+            raise ValueError(
+                f"Writer requires a supported Spark 3.5.6 runtime; observed {spark.version!r}"
+            )
         mismatches = [key for key, value in settings.items() if spark.conf.get(key, "") != value]
         if mismatches:
             raise ValueError("Writer Spark settings differ: " + ", ".join(sorted(mismatches)))
