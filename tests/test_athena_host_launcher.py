@@ -103,7 +103,7 @@ def test_command_has_fixed_runtime_mounts_resources_and_private_pipe(case):
         and command[command.index("--memory") + 1] == "4g"
     )
     assert "--read-only" in command and "--publish" not in command and "--env-file" not in command
-    assert command[command.index("--tmpfs") + 1] == "/tmp:rw,nosuid,nodev,size=536870912"
+    assert command[command.index("--tmpfs") + 1] == "/tmp:rw,exec,nosuid,nodev,size=536870912"
     assert command[-2:] == ["--execute", "--credentials-stdin"]
     mounts = [command[i + 1] for i, x in enumerate(command) if x == "--mount"]
     assert all(

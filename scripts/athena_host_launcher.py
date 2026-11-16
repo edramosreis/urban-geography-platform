@@ -72,7 +72,8 @@ def docker_command(
         (bundle.resolve(), "/workspace/.private/tools/glue-runtime/" + BUNDLE_NAME, True),
         (output.resolve(), "/workspace/artifacts/reader-operation", False),
     ]
-    extra = ["--tmpfs", "/tmp:rw,nosuid,nodev,size=536870912"]
+    # Snappy extracts its JNI library into /tmp before loading it.
+    extra = ["--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=536870912"]
     for source, target, readonly in mounts:
         if "," in str(source):
             raise bridge.BridgeError("invalid_mount_path")
