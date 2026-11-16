@@ -264,6 +264,12 @@ class ViewController:
                     ]
                 },
             }
+            # dbt uses the pinned profile spelling; Athena echoes its catalog
+            # identifier in lowercase. Accept only these two prepared contexts.
+            profile = source["profile"]["urban_geo_athena"]["outputs"]["prepared_athena"]
+            profile_context = {"Catalog": profile["database"], "Database": profile["schema"]}
+            if params.get("QueryExecutionContext") == profile_context:
+                expected["QueryExecutionContext"] = profile_context
             if (
                 params != expected
                 or not isinstance(params.get("QueryString"), str)
@@ -283,12 +289,15 @@ class ViewController:
             self._gate()  # Includes project/clock drift during workgroup preflight.
             request = {
                 **params,
+                # Persist and submit the exact representation Athena returns.
+                "QueryString": params["QueryString"].strip(),
+                "QueryExecutionContext": source["request_template"]["QueryExecutionContext"],
                 "ResultConfiguration": source["request_template"]["ResultConfiguration"],
                 "ResultReuseConfiguration": source["request_template"]["ResultReuseConfiguration"],
                 "ClientRequestToken": secrets.token_hex(32),
             }
             query_plan = {
-                "query_sha256": hashlib.sha256(params["QueryString"].encode()).hexdigest(),
+                "query_sha256": hashlib.sha256(request["QueryString"].encode()).hexdigest(),
                 "workgroup": source["workgroup"],
             }
             attempt = ViewAttempt(

@@ -44,7 +44,8 @@ def test_two_ordered_view_queries_keep_tokens_and_reuse_verified_terminal_metada
 
 
 @pytest.mark.parametrize(
-    "change", ["order", "sql", "workgroup", "results", "token", "extra", "oversized"]
+    "change",
+    ["order", "sql", "workgroup", "results", "token", "extra", "oversized", "catalog", "database"],
 )
 def test_changed_adapter_request_blocks_before_submission(fixture, change):
     f = fixture
@@ -57,6 +58,10 @@ def test_changed_adapter_request_blocks_before_submission(fixture, change):
         request["WorkGroup"] = "primary"
     elif change == "results":
         request["ResultConfiguration"]["OutputLocation"] = "s3://elsewhere/"
+    elif change == "catalog":
+        request["QueryExecutionContext"]["Catalog"] = "other"
+    elif change == "database":
+        request["QueryExecutionContext"]["Database"] = "other"
     elif change == "token":
         request["ClientRequestToken"] = "replacement"
     elif change == "extra":
@@ -295,3 +300,26 @@ def test_project_and_clock_are_rechecked_after_the_external_gate(tmp_path, monke
             f.control.start_query_execution(**params(f.control))
     f.client.start_query_execution.assert_not_called()
     assert not (f.control.output / "query-01").exists()
+
+
+def test_profile_catalog_and_outer_whitespace_are_rendered_before_durable_submission(fixture):
+    f = fixture
+    incoming = copy.deepcopy(params(f.control))
+    incoming["QueryExecutionContext"]["Catalog"] = "AwsDataCatalog"
+    incoming["QueryString"] = "\n" + incoming["QueryString"] + "\n"
+    with f.control.session():
+        f.control.start_query_execution(**incoming)
+    sent = f.requests["view-1"]
+    assert sent["QueryExecutionContext"] == {
+        "Catalog": "awsdatacatalog",
+        "Database": "urban_geo_test_m4",
+    }
+    assert sent["QueryString"] == incoming["QueryString"].strip()
+    saved = json.loads((f.control.output / "query-01/intent.json").read_text())
+    assert saved["request"] == sent
+    assert (
+        saved["plan"]["query_sha256"]
+        == __import__("hashlib").sha256(sent["QueryString"].encode()).hexdigest()
+    )
+    assert f.control.report()["queries"][0]["outcome"] == "query_succeeded"
+    f.client.stop_query_execution.assert_not_called()
