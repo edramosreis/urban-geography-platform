@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from athena_control import ACTIVE as QUERY_ACTIVE
 from athena_control import TERMINAL as QUERY_TERMINAL
+from athena_read_plan import EXECUTION_CATALOG
 from glue_control import ACTIVE as JOB_ACTIVE
 from glue_control import TERMINAL as JOB_TERMINAL
 from trial_cleanup_inventory import _save, _text, cleanup_scope, validate_inventory_output
@@ -241,7 +242,7 @@ def inventory_services(
                 raise ValueError("Query identity, workgroup or state differs")
             context = query.get("QueryExecutionContext", {})
             matches = (
-                context.get("Catalog") == "AwsDataCatalog"
+                context.get("Catalog") == EXECUTION_CATALOG
                 and context.get("Database") == expected["database"]
             )
             value = {

@@ -66,7 +66,7 @@ def make_services(frozen):
     query = {
         "QueryExecutionId": "query-owned",
         "WorkGroup": expected["workgroup"],
-        "QueryExecutionContext": {"Catalog": "AwsDataCatalog", "Database": expected["database"]},
+        "QueryExecutionContext": {"Catalog": "awsdatacatalog", "Database": expected["database"]},
         "Status": {"State": "SUCCEEDED", "StateChangeReason": SENTINEL},
         "Query": SENTINEL,
     }

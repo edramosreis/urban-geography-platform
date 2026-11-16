@@ -31,6 +31,18 @@ def test_intent_is_durable_before_use_and_token_is_unique_per_attempt(tmp_path, 
     assert saved["plan"]["provenance_verified"] is False
 
 
+def test_fixed_request_matches_athena_catalog_case_and_query_echo(attempt):
+    request = attempt.intent()["request"]
+    observed = execution(attempt)["QueryExecution"]
+    # Real Athena lowercases the context catalog and removes the final newline.
+    observed["Query"] = observed["Query"].removesuffix("\n")
+    observed["QueryExecutionContext"] = observed["QueryExecutionContext"] | {
+        "Catalog": observed["QueryExecutionContext"]["Catalog"].lower()
+    }
+    report = control.inspect_query(observed, request, "query-001")
+    assert report["drift"] == report["missing"] == []
+
+
 def test_existing_attempt_is_never_replaced(attempt):
     before = {p.name: p.read_bytes() for p in attempt.output.iterdir()}
     with pytest.raises(ValueError, match="fresh"):

@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from athena_control import ACTIVE as QUERY_ACTIVE
 from athena_control import TERMINAL as QUERY_TERMINAL
 from athena_control import canonical, write_once
-from athena_read_plan import same
+from athena_read_plan import EXECUTION_CATALOG, same
 from aws_login_bridge import BridgeError
 from aws_role_session import LifetimeClient
 from glue_control import ACTIVE as JOB_ACTIVE
@@ -145,7 +145,7 @@ def quiesce_services(
             row.get("QueryExecutionId") != binding["id"]
             or row.get("WorkGroup") != expected["workgroup"]
             or row.get("QueryExecutionContext")
-            != {"Catalog": "AwsDataCatalog", "Database": expected["database"]}
+            != {"Catalog": EXECUTION_CATALOG, "Database": expected["database"]}
             or not isinstance(sql, str)
             or len(sql.encode()) > 16384
             or hashlib.sha256(sql.encode()).hexdigest() != binding["query_sha256"]

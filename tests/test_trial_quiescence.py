@@ -156,7 +156,7 @@ def test_bad_scope_output_or_live_identity_is_rejected_before_any_change(case, d
         case.query_rows["query-0"]["Query"] = "SELECT unrelated"
     else:
         case.query_rows["query-0"]["QueryExecutionContext"] = {
-            "Catalog": "AwsDataCatalog",
+            "Catalog": "awsdatacatalog",
             "Database": "other",
         }
     with pytest.raises(ValueError):

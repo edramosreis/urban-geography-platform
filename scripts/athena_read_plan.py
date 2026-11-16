@@ -15,6 +15,7 @@ from urban_geography.glue_runtime import runtime_plan
 
 MIN_SCAN_BYTES = 10 * 1024 * 1024
 MAX_SCAN_BYTES = 100 * 1024 * 1024
+EXECUTION_CATALOG = "awsdatacatalog"
 
 
 class AthenaClient(Protocol):
@@ -62,7 +63,7 @@ def read_plan(
         + models["grid_proximity"].format(facts="facts")
         + "\n), releases AS (\n"
         + models["release_proximity"].format(grids="grids")
-        + "\n)\nSELECT * FROM releases ORDER BY source_release, area_id LIMIT 2\n"
+        + "\n)\nSELECT * FROM releases ORDER BY source_release, area_id LIMIT 2"
     )
     results = f"s3://{deployment_name}-results-{account_id}-{region}/queries/"
     workgroup = deployment_name + "-m4"
@@ -93,7 +94,7 @@ def read_plan(
         "request_template": {
             "QueryString": query,
             "WorkGroup": workgroup,
-            "QueryExecutionContext": {"Catalog": "AwsDataCatalog", "Database": recipe["database"]},
+            "QueryExecutionContext": {"Catalog": EXECUTION_CATALOG, "Database": recipe["database"]},
             "ResultConfiguration": result_config,
             "ResultReuseConfiguration": {"ResultReuseByAgeConfiguration": {"Enabled": False}},
         },
