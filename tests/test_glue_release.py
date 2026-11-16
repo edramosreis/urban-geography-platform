@@ -21,7 +21,10 @@ def test_freeze_has_only_required_files_and_derived_job_locations(frozen):
         manifest["job"]["arguments"]["--summary-sha256"]
         == frozen.options["expected_summary_sha256"]
     )
-    assert manifest["job"]["arguments"]["--python-modules-installer-option"] == "--no-index"
+    assert manifest["contract_version"] == 2
+    assert (
+        manifest["job"]["arguments"]["--python-modules-installer-option"] == "--no-index --no-deps"
+    )
     assert manifest["job"]["script_location"].endswith("/run_glue_s3_writer.py")
     assert len(manifest["identity"]["files"]) == 10
     assert all(not key.startswith("warehouse/") for key in manifest["keys"].values())
@@ -137,3 +140,39 @@ def test_previous_region_manifest_is_rejected_even_with_matching_checksum(frozen
     pin = repin(frozen, manifest)
     with pytest.raises(ValueError, match="scoped to eu-north-1"):
         release.load_release(frozen.path, pin)
+
+
+def test_version_two_changes_identity_and_preserves_legacy_release_loading(frozen):
+    legacy = release.render_release(frozen.manifest["identity"], contract_version=1)
+    assert legacy["release_id"] == hashlib.sha256(release.encode(legacy["identity"])).hexdigest()
+    assert legacy["release_id"] != frozen.manifest["release_id"]
+    assert legacy["completion_key"] != frozen.manifest["completion_key"]
+    assert legacy["job"]["arguments"]["--python-modules-installer-option"] == "--no-index"
+    assert release.load_release(frozen.path, repin(frozen, legacy)) == legacy
+
+
+@pytest.mark.parametrize("version", [True, None, "2", 0, 3, 1.0])
+def test_unknown_or_mistyped_release_versions_are_rejected(frozen, version):
+    with pytest.raises(ValueError, match="unsupported version"):
+        release.render_release(frozen.manifest["identity"], contract_version=version)
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_installer_options_cannot_be_changed_by_repinning_a_release(frozen, version):
+    manifest = release.render_release(frozen.manifest["identity"], contract_version=version)
+    manifest["job"]["arguments"]["--python-modules-installer-option"] = (
+        "--no-index --no-deps" if version == 1 else "--no-index"
+    )
+    with pytest.raises(ValueError, match="derived contract"):
+        release.load_release(frozen.path, repin(frozen, manifest))
+
+
+@pytest.mark.parametrize(
+    "options", [None, ["--no-index"], ["--no-deps"], ["--no-index", "--no-deps", "--upgrade"]]
+)
+def test_bundle_installer_drift_is_rejected_before_payload_inspection(tmp_path, options):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({"installer_options": options}))
+    with pytest.raises(ValueError, match="Bundle installer options"):
+        release.verify_bundle(tmp_path, bundle)

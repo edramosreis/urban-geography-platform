@@ -161,6 +161,7 @@ def test_release_rechecks_archived_project_against_current_source(
             "bytes": archive.stat().st_size,
             "members_sha256": members,
         },
+        "installer_options": ["--no-index", "--no-deps"],
         "installed_bundle_check": checked,
     }
     (bundle / "manifest.json").write_text(json.dumps(manifest))

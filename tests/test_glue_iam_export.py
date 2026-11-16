@@ -97,12 +97,16 @@ def test_iam_only_export_leaves_job_omitted(frozen):
     assert "glue_operator_principal_arn" not in result
 
 
-def test_synthetic_job_fixture_matches_the_current_frozen_recipe():
+@pytest.mark.parametrize("filename", ["glue_job_release.json", "glue_job_release_v2.json"])
+def test_synthetic_job_fixtures_match_their_versioned_frozen_recipe(filename):
     from urban_geography.glue_release import render_release
 
-    fixture = SCRIPT.parents[1] / "tests/fixtures/glue_job_release.json"
+    fixture = SCRIPT.parents[1] / "tests/fixtures" / filename
     manifest = json.loads(fixture.read_text())
-    assert render_release(manifest["identity"]) == manifest
+    assert (
+        render_release(manifest["identity"], contract_version=manifest["contract_version"])
+        == manifest
+    )
     assert manifest["identity"]["files"]["input/summary.json"]["bytes"] == 1
 
 

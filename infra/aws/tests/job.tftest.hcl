@@ -10,12 +10,12 @@ variables {
   aws_region            = "eu-north-1"
   aws_account_id        = "123456789012"
   deployment_name       = "urban-geo-test"
-  glue_job_release_json = file("../../tests/fixtures/glue_job_release.json")
+  glue_job_release_json = file("../../tests/fixtures/glue_job_release_v2.json")
   glue_release = {
-    release_id      = jsondecode(file("../../tests/fixtures/glue_job_release.json")).release_id
-    manifest_sha256 = filesha256("../../tests/fixtures/glue_job_release.json")
-    summary_sha256  = jsondecode(file("../../tests/fixtures/glue_job_release.json")).identity.summary_sha256
-    object_keys     = concat(values(jsondecode(file("../../tests/fixtures/glue_job_release.json")).keys), [jsondecode(file("../../tests/fixtures/glue_job_release.json")).completion_key])
+    release_id      = jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).release_id
+    manifest_sha256 = filesha256("../../tests/fixtures/glue_job_release_v2.json")
+    summary_sha256  = jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).identity.summary_sha256
+    object_keys     = concat(values(jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).keys), [jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).completion_key])
   }
 }
 
@@ -334,4 +334,39 @@ run "job_preserves_run_based_log_streams" {
     )
     error_message = "Keep the dedicated log group but let Glue use its default run-based stream names."
   }
+}
+
+
+run "legacy_release_keeps_its_original_installer_contract" {
+  command = plan
+  variables {
+    glue_job_release_json = file("../../tests/fixtures/glue_job_release.json")
+    glue_release = {
+      release_id      = jsondecode(file("../../tests/fixtures/glue_job_release.json")).release_id
+      manifest_sha256 = filesha256("../../tests/fixtures/glue_job_release.json")
+      summary_sha256  = jsondecode(file("../../tests/fixtures/glue_job_release.json")).identity.summary_sha256
+      object_keys     = concat(values(jsondecode(file("../../tests/fixtures/glue_job_release.json")).keys), [jsondecode(file("../../tests/fixtures/glue_job_release.json")).completion_key])
+    }
+  }
+  assert {
+    condition     = aws_glue_job.pilot[0].non_overridable_arguments["--python-modules-installer-option"] == "--no-index"
+    error_message = "Historical v1 job definitions must remain inspectable without changing their installer contract."
+  }
+}
+
+run "new_release_preserves_both_verified_installer_options" {
+  command = plan
+  assert {
+    condition     = aws_glue_job.pilot[0].non_overridable_arguments["--python-modules-installer-option"] == "--no-index --no-deps"
+    error_message = "New releases must match the offline-verified bundle installation mode."
+  }
+}
+
+run "new_release_cannot_silently_drop_no_deps" {
+  command = plan
+  variables {
+    glue_job_release_json = jsonencode(merge(jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")), { job = merge(jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).job, { arguments = merge(jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).job.arguments, { "--python-modules-installer-option" = "--no-index" }) }) }))
+    glue_release          = merge(var.glue_release, { manifest_sha256 = sha256(jsonencode(merge(jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")), { job = merge(jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).job, { arguments = merge(jsondecode(file("../../tests/fixtures/glue_job_release_v2.json")).job.arguments, { "--python-modules-installer-option" = "--no-index" }) }) }))) })
+  }
+  expect_failures = [aws_glue_job.pilot]
 }

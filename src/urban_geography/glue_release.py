@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from urban_geography.glue_bundle import project_requirements, publish_directory, unpack_verified
+from urban_geography.glue_bundle import (
+    INSTALLER_OPTIONS,
+    project_requirements,
+    publish_directory,
+    unpack_verified,
+)
 from urban_geography.glue_dependencies import digest, export_dependencies, verify_cache
 from urban_geography.glue_input import MAX_SUMMARY_BYTES, _copy_verified, load_prepared_input
 from urban_geography.glue_package import package_inputs, verify_wheel
@@ -47,8 +52,10 @@ def file_record(path: Path) -> dict[str, Any]:
     return {"bytes": size, "sha256": checksum.hexdigest()}
 
 
-def render_release(identity: dict[str, Any]) -> dict[str, Any]:
+def render_release(identity: dict[str, Any], *, contract_version: int = 2) -> dict[str, Any]:
     """Derive all S3 keys and job arguments; arbitrary destinations are not accepted."""
+    if type(contract_version) is not int or contract_version not in (1, 2):
+        raise ValueError("Release manifest differs from its derived contract: unsupported version")
     if set(identity) != {"target", "summary_sha256", "input_manifest_sha256", "files"}:
         raise ValueError("Unexpected release identity fields")
     target = identity["target"]
@@ -90,7 +97,13 @@ def render_release(identity: dict[str, Any]) -> dict[str, Any]:
     ]:
         if files["input/" + name]["sha256"] != identity[pin]:
             raise ValueError("Release input checksum differs from its pin")
-    release_id = hashlib.sha256(encode(identity)).hexdigest()
+    # Preserve historical v1 IDs; bind the changed installer contract into every new v2 ID.
+    release_identity = (
+        identity
+        if contract_version == 1
+        else {"contract_version": contract_version, "identity": identity}
+    )
+    release_id = hashlib.sha256(encode(release_identity)).hexdigest()
     prefix = "runtime/releases/" + release_id + "/"
     keys = {}
     for name in sorted(files):
@@ -103,7 +116,7 @@ def render_release(identity: dict[str, Any]) -> dict[str, Any]:
         keys[name] = key
     bucket = urlsplit(recipe["warehouse"]).netloc
     return {
-        "contract_version": 1,
+        "contract_version": contract_version,
         "status": "frozen_local_release",
         "identity": identity,
         "release_id": release_id,
@@ -117,7 +130,9 @@ def render_release(identity: dict[str, Any]) -> dict[str, Any]:
             "arguments": recipe["jar_job_arguments"]
             | {
                 "--additional-python-modules": f"s3://{bucket}/{keys[BUNDLE]}",
-                "--python-modules-installer-option": "--no-index",
+                "--python-modules-installer-option": (
+                    "--no-index" if contract_version == 1 else " ".join(INSTALLER_OPTIONS)
+                ),
                 "--deployment-name": target["deployment_name"],
                 "--account-id": target["account_id"],
                 "--region": target["region"],
@@ -144,7 +159,9 @@ def load_release(path: Path, expected_sha256: str) -> dict[str, Any]:
     if len(content) > MAX_SUMMARY_BYTES or hashlib.sha256(content).hexdigest() != expected_sha256:
         raise ValueError("Release manifest size or checksum differs")
     manifest = json.loads(content)
-    expected = render_release(manifest["identity"])
+    expected = render_release(
+        manifest["identity"], contract_version=manifest.get("contract_version")
+    )
     if encode(expected) != encode(manifest):
         raise ValueError("Release manifest differs from its derived contract")
     files = manifest["identity"]["files"]
@@ -173,6 +190,8 @@ def load_release(path: Path, expected_sha256: str) -> dict[str, Any]:
 def verify_bundle(root: Path, bundle: Path) -> None:
     """Recheck archived wheels against current source and the frozen dependency lock."""
     receipt = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    if receipt.get("installer_options") != list(INSTALLER_OPTIONS):
+        raise ValueError("Bundle installer options differ from the verified offline contract")
     archive = bundle / "urban-geography.gluewheels.zip"
     if receipt["status"] != "complete" or file_record(archive) != {
         key: receipt["bundle"][key] for key in ("bytes", "sha256")

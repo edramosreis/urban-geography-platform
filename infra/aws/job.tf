@@ -7,7 +7,7 @@ locals {
   scratch_prefix = var.glue_release == null ? "" : "scratch/glue/${var.glue_release.release_id}"
   job_release_matches_scope = var.glue_release == null ? false : try(
     (
-      local.job_release.contract_version == 1 && local.job_release.status == "frozen_local_release" &&
+      contains([1, 2], local.job_release.contract_version) && local.job_release.status == "frozen_local_release" &&
       local.job_release.release_id == var.glue_release.release_id &&
       local.job_release.identity.summary_sha256 == var.glue_release.summary_sha256 &&
       local.job_release.identity.target.deployment_name == var.deployment_name &&
@@ -31,7 +31,9 @@ locals {
       can(regex("^[0-9a-f]{64}$", local.job_release.identity.input_manifest_sha256)) &&
       local.job_release.job.arguments["--table-name"] == "building_proximity" &&
       local.job_release.job.arguments["--additional-python-modules"] == "s3://${local.bucket_names["lake"]}/runtime/releases/${var.glue_release.release_id}/urban-geography.gluewheels.zip" &&
-      local.job_release.job.arguments["--python-modules-installer-option"] == "--no-index" &&
+      local.job_release.job.arguments["--python-modules-installer-option"] == (
+        local.job_release.contract_version == 1 ? "--no-index" : "--no-index --no-deps"
+      ) &&
       local.job_release.job.arguments["--user-jars-first"] == "true" &&
       local.job_release.job.arguments["--extra-jars"] == join(",", [for key in local.release_jar_keys : "s3://${local.bucket_names["lake"]}/${key}"])
     ),

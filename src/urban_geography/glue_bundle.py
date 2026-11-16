@@ -22,6 +22,7 @@ from urban_geography.glue_dependencies import (
 )
 from urban_geography.glue_package import verify_wheel
 
+INSTALLER_OPTIONS = ("--no-index", "--no-deps")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -133,8 +134,7 @@ def build_bundle(root: Path, cache: Path, project_package: Path, output: Path) -
                 "pip",
                 "install",
                 "--offline",
-                "--no-index",
-                "--no-deps",
+                *INSTALLER_OPTIONS,
                 "--python",
                 sys.executable,
                 "--target",
@@ -204,7 +204,7 @@ def build_bundle(root: Path, cache: Path, project_package: Path, output: Path) -
         "dependency_wheels": artifacts,
         "input_sha256": plan["input_sha256"],
         "installed_bundle_check": installed,
-        "installer_options": ["--no-index", "--no-deps"],
+        "installer_options": list(INSTALLER_OPTIONS),
         "aws_api_or_upload": False,
         "managed_glue_validated": False,
     }
