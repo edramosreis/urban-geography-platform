@@ -5,6 +5,8 @@ build-backend = "hatchling.build"
 [project]
 name = "urban-geography"
 version = "0.1.0"
+license = "MIT"
+license-files = ["LICENSE"]
 description = "Reproducible European urban geography batch analytics"
 requires-python = ">=3.11,<3.12"
 dependencies = [

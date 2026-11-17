@@ -15,6 +15,9 @@ SPEC.loader.exec_module(PUBLICATION)
     "path",
     [
         "AGENTS.md",
+        "docs/LICENSE",
+        ".private/LICENSE",
+        "artifacts/LICENSE",
         "docs/STATUS.md",
         "docs/ARCHITECTURE.md",
         "docs/evidence/run.json",
@@ -60,6 +63,7 @@ def test_private_paths_cannot_enter_published_history(path):
     "path",
     [
         "README.md",
+        "LICENSE",
         "Dockerfile",
         ".gitignore",
         "configs/coimbra_pilot.json",

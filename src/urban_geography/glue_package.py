@@ -47,7 +47,19 @@ def package_inputs(root: Path) -> dict[str, Any]:
     }
     if not required.issubset(payload):
         raise ValueError("Package source or required SQL resources are missing")
+    licensing = {}
+    if project.get("license") is not None:
+        if project["license"] != "MIT" or project.get("license-files") != ["LICENSE"]:
+            raise ValueError("Use the reviewed MIT expression and exact root LICENSE file")
+        license_path = root / "LICENSE"
+        if not license_path.is_file() or not 0 < license_path.stat().st_size <= 16 * 1024:
+            raise ValueError("The declared project LICENSE is missing or exceeds 16 KiB")
+        licensing = {
+            "license_expression": "MIT",
+            "license_sha256": _sha256(license_path.read_bytes()),
+        }
     return {
+        **licensing,
         "name": project["name"],
         "version": project["version"],
         "requires_python": project["requires-python"],
@@ -66,16 +78,24 @@ def verify_wheel(wheel: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     """Reject missing, altered or extra payload, including private/dependency files."""
     info_prefix = f"urban_geography-{inputs['version']}.dist-info/"
     expected = inputs["payload_sha256"]
+    license_name = info_prefix + "licenses/LICENSE"
+    license_pin = inputs.get("license_sha256")
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         if len(names) != len(set(names)):
             raise ValueError("Wheel contains duplicate ZIP entries")
         actual = set()
+        license_found = False
         for entry in archive.infolist():
             name = entry.filename
             parts = PurePosixPath(name).parts
             if name.startswith("/") or "\\" in name or ".." in parts:
                 raise ValueError("Unsafe wheel entry path")
+            if license_pin is not None and name == license_name:
+                if entry.file_size > 16 * 1024 or _sha256(archive.read(name)) != license_pin:
+                    raise ValueError("Wheel license differs from the declared source LICENSE")
+                license_found = True
+                continue
             if name.startswith(info_prefix) and name[len(info_prefix) :] in METADATA_FILES:
                 if entry.file_size > 128 * 1024:
                     raise ValueError("Wheel metadata is unexpectedly large")
@@ -85,6 +105,8 @@ def verify_wheel(wheel: Path, inputs: dict[str, Any]) -> dict[str, Any]:
             if _sha256(archive.read(name)) != expected[name]:
                 raise ValueError(f"Wheel payload differs from source: {name}")
             actual.add(name)
+        if license_pin is not None and not license_found:
+            raise ValueError("Wheel is missing the declared LICENSE")
         if actual != set(expected):
             raise ValueError("Wheel is missing source or SQL payload")
         if not {info_prefix + name for name in METADATA_FILES}.issubset(names):
@@ -98,6 +120,10 @@ def verify_wheel(wheel: Path, inputs: dict[str, Any]) -> dict[str, Any]:
             or sorted(metadata.get_all("Requires-Dist", [])) != inputs["dependencies"]
         ):
             raise ValueError("Wheel package metadata differs from pyproject.toml")
+        if metadata.get("License-Expression") != inputs.get(
+            "license_expression"
+        ) or metadata.get_all("License-File", []) != (["LICENSE"] if license_pin else []):
+            raise ValueError("Wheel license metadata differs from the declared project license")
         entry_points = ConfigParser()
         entry_points.read_string(archive.read(info_prefix + "entry_points.txt").decode("utf-8"))
         actual_scripts = (

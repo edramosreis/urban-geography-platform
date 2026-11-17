@@ -37,6 +37,11 @@ def wheel_entries(root):
         b"Metadata-Version: 2.4\nName: urban-geography\nVersion: 0.1.0\n"
         b"Requires-Python: <3.12,>=3.11\nRequires-Dist: pyspark==3.5.6\n\n"
     )
+    if "license_sha256" in inputs:
+        entries[prefix + "licenses/LICENSE"] = (root / "LICENSE").read_bytes()
+        entries[prefix + "METADATA"] = entries[prefix + "METADATA"].replace(
+            b"\n\n", b"\nLicense-Expression: MIT\nLicense-File: LICENSE\n\n"
+        )
     entries[prefix + "WHEEL"] = b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
     entries[prefix + "entry_points.txt"] = (
         b"[console_scripts]\nurban-geo = urban_geography.cli:main\n"
@@ -169,3 +174,43 @@ def test_release_rechecks_archived_project_against_current_source(
     (tiny_project / "src/urban_geography/__init__.py").write_text("# changed since build")
     with pytest.raises(ValueError, match="differs from source"):
         release.verify_bundle(tiny_project, bundle)
+
+
+@pytest.fixture
+def licensed_project(tiny_project):
+    project = tiny_project / "pyproject.toml"
+    project.write_text(
+        project.read_text().replace(
+            "[project.scripts]", 'license="MIT"\nlicense-files=["LICENSE"]\n[project.scripts]'
+        )
+    )
+    (tiny_project / "LICENSE").write_text("MIT License\nSynthetic copyright fixture\n")
+    return tiny_project
+
+
+def test_declared_license_is_included_and_pinned(licensed_project, tmp_path):
+    inputs, entries = wheel_entries(licensed_project)
+    result = package.verify_wheel(write_wheel(tmp_path / "licensed.whl", entries), inputs)
+    assert result["source_and_sql_match"] is True
+    (licensed_project / "LICENSE").write_text("Changed after the package input was frozen")
+    assert package.package_inputs(licensed_project) != inputs
+
+
+@pytest.mark.parametrize("defect", ["missing", "changed", "extra", "expression", "file_header"])
+def test_license_drift_and_extra_license_payload_are_rejected(licensed_project, tmp_path, defect):
+    inputs, entries = wheel_entries(licensed_project)
+    prefix = "urban_geography-0.1.0.dist-info/"
+    if defect == "missing":
+        del entries[prefix + "licenses/LICENSE"]
+    elif defect == "changed":
+        entries[prefix + "licenses/LICENSE"] = b"Different license bytes"
+    elif defect == "extra":
+        entries[prefix + "licenses/credentials.txt"] = b"Must not enter the wheel"
+    elif defect == "expression":
+        entries[prefix + "METADATA"] = entries[prefix + "METADATA"].replace(b"MIT", b"Apache-2.0")
+    else:
+        entries[prefix + "METADATA"] = entries[prefix + "METADATA"].replace(
+            b"License-File: LICENSE", b"License-File: private.txt"
+        )
+    with pytest.raises(ValueError, match="license|LICENSE|Unexpected wheel payload"):
+        package.verify_wheel(write_wheel(tmp_path / "bad-license.whl", entries), inputs)

@@ -15,6 +15,7 @@ ROOT_FILES = {
     ".gitignore",
     ".python-version",
     "Dockerfile",
+    "LICENSE",
     "README.md",
     "compose.yaml",
     "pyproject.toml",
