@@ -1,0 +1,178 @@
+{
+  "grid_proximity": {
+    "table": {
+      "CatalogId": "123456789012",
+      "DatabaseName": "urban_geo_test_m4",
+      "Name": "grid_proximity",
+      "VersionId": "1",
+      "TableType": "VIRTUAL_VIEW",
+      "Parameters": {
+        "presto_view": "true",
+        "comment": "Presto View"
+      },
+      "StorageDescriptor": {
+        "Columns": [
+          {
+            "Name": "source_release",
+            "Type": "string"
+          },
+          {
+            "Name": "area_id",
+            "Type": "string"
+          },
+          {
+            "Name": "source_run_sha256",
+            "Type": "varchar(64)"
+          },
+          {
+            "Name": "grid_id",
+            "Type": "string"
+          },
+          {
+            "Name": "mapped_buildings",
+            "Type": "bigint"
+          },
+          {
+            "Name": "buildings_within",
+            "Type": "bigint"
+          },
+          {
+            "Name": "share_within",
+            "Type": "double"
+          }
+        ],
+        "Location": "",
+        "Compressed": false,
+        "NumberOfBuckets": 0,
+        "SerdeInfo": {},
+        "SortColumns": [],
+        "StoredAsSubDirectories": false
+      },
+      "ViewExpandedText": "/* Presto View */"
+    },
+    "definition": {
+      "originalSql": "WITH\n  __dbt__cte__stg_building_proximity AS (\n   SELECT\n     building_id\n   , park_id\n   , distance_m\n   , within_threshold\n   , grid_id\n   , source_release\n   , area_id\n   , 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' source_run_sha256\n   FROM\n     \"awsdatacatalog\".\"urban_geo_test_m4\".\"building_proximity\" FOR VERSION AS OF 123\n) \n, counts AS (\n   SELECT\n     source_release\n   , area_id\n   , source_run_sha256\n   , grid_id\n   , COUNT(*) mapped_buildings\n   , SUM((CASE WHEN within_threshold THEN 1 ELSE 0 END)) buildings_within\n   FROM\n     __dbt__cte__stg_building_proximity\n   GROUP BY source_release, area_id, source_run_sha256, grid_id\n) \nSELECT\n  *\n, (CAST(buildings_within AS DOUBLE) / mapped_buildings) share_within\nFROM\n  counts\nORDER BY source_release ASC, area_id ASC, grid_id ASC\n",
+      "catalog": "awsdatacatalog",
+      "schema": "urban_geo_test_m4",
+      "columns": [
+        {
+          "name": "source_release",
+          "type": "varchar"
+        },
+        {
+          "name": "area_id",
+          "type": "varchar"
+        },
+        {
+          "name": "source_run_sha256",
+          "type": "varchar(64)"
+        },
+        {
+          "name": "grid_id",
+          "type": "varchar"
+        },
+        {
+          "name": "mapped_buildings",
+          "type": "bigint"
+        },
+        {
+          "name": "buildings_within",
+          "type": "bigint"
+        },
+        {
+          "name": "share_within",
+          "type": "double"
+        }
+      ],
+      "owner": "offline",
+      "runAsInvoker": false,
+      "properties": {},
+      "isProtected": false,
+      "isMultiDialect": false
+    }
+  },
+  "release_proximity": {
+    "table": {
+      "CatalogId": "123456789012",
+      "DatabaseName": "urban_geo_test_m4",
+      "Name": "release_proximity",
+      "VersionId": "1",
+      "TableType": "VIRTUAL_VIEW",
+      "Parameters": {
+        "presto_view": "true",
+        "comment": "Presto View"
+      },
+      "StorageDescriptor": {
+        "Columns": [
+          {
+            "Name": "source_release",
+            "Type": "string"
+          },
+          {
+            "Name": "area_id",
+            "Type": "string"
+          },
+          {
+            "Name": "source_run_sha256",
+            "Type": "varchar(64)"
+          },
+          {
+            "Name": "mapped_buildings",
+            "Type": "bigint"
+          },
+          {
+            "Name": "buildings_within",
+            "Type": "bigint"
+          },
+          {
+            "Name": "share_within",
+            "Type": "double"
+          }
+        ],
+        "Location": "",
+        "Compressed": false,
+        "NumberOfBuckets": 0,
+        "SerdeInfo": {},
+        "SortColumns": [],
+        "StoredAsSubDirectories": false
+      },
+      "ViewExpandedText": "/* Presto View */"
+    },
+    "definition": {
+      "originalSql": "WITH\n  counts AS (\n   SELECT\n     source_release\n   , area_id\n   , source_run_sha256\n   , SUM(mapped_buildings) mapped_buildings\n   , SUM(buildings_within) buildings_within\n   FROM\n     \"AwsDataCatalog\".\"urban_geo_test_m4\".\"grid_proximity\"\n   GROUP BY source_release, area_id, source_run_sha256\n) \nSELECT\n  *\n, (CAST(buildings_within AS DOUBLE) / mapped_buildings) share_within\nFROM\n  counts\nORDER BY source_release ASC, area_id ASC\n",
+      "catalog": "awsdatacatalog",
+      "schema": "urban_geo_test_m4",
+      "columns": [
+        {
+          "name": "source_release",
+          "type": "varchar"
+        },
+        {
+          "name": "area_id",
+          "type": "varchar"
+        },
+        {
+          "name": "source_run_sha256",
+          "type": "varchar(64)"
+        },
+        {
+          "name": "mapped_buildings",
+          "type": "bigint"
+        },
+        {
+          "name": "buildings_within",
+          "type": "bigint"
+        },
+        {
+          "name": "share_within",
+          "type": "double"
+        }
+      ],
+      "owner": "offline",
+      "runAsInvoker": false,
+      "properties": {},
+      "isProtected": false,
+      "isMultiDialect": false
+    }
+  }
+}

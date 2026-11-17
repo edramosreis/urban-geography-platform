@@ -1,7 +1,10 @@
 """View metadata must bind to the exact model and immutable source snapshot."""
 
 import base64
+import copy
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -152,3 +155,95 @@ def test_lexical_comparison_preserves_literals_and_accepts_formatting(sql):
     assert CATALOG.sql_tokens(sql) == CATALOG.sql_tokens("select 'A--B/*C*/' AS value")
     assert CATALOG.sql_tokens(sql) != CATALOG.sql_tokens("select 'a--b/*c*/' AS value")
     assert CATALOG.sql_tokens('SELECT "SELECT"') != CATALOG.sql_tokens("SELECT SELECT")
+
+
+@pytest.fixture
+def stored_views():
+    # Sanitized service readback, independent of the model-token renderer.
+    return json.loads((Path(__file__).parent / "fixtures/athena_view_metadata.json").read_text())
+
+
+@pytest.mark.parametrize("name", ["grid_proximity", "release_proximity"])
+def test_observed_engine_view_preserves_fixed_binding_and_bounded_hash(plan, stored_views, name):
+    row = stored_views[name]
+    table = row["table"] | {"ViewOriginalText": encoded(row["definition"])}
+    observed = CATALOG.view_state(table, plan, name)
+    assert ("source_run_sha256", "varchar(64)") in observed["columns"]
+    assert observed["definition"]["properties"] == {}
+    assert observed["definition"]["isProtected"] is False
+    assert observed["definition"]["isMultiDialect"] is False
+
+
+@pytest.mark.parametrize("name", ["grid_proximity", "release_proximity"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "protected",
+        "multi",
+        "properties",
+        "invalid_properties",
+        "nonboolean_flag",
+        "unknown_field",
+        "narrow_hash",
+        "wide_hash",
+        "mismatched_hash_type",
+        "numeric_type",
+        "wrong_alias",
+        "division",
+        "sort",
+        "extra_where",
+        "source",
+    ],
+)
+def test_engine_rendering_still_rejects_metadata_or_calculation_changes(
+    plan, stored_views, name, bad
+):
+    row = copy.deepcopy(stored_views[name])
+    table, definition = row["table"], row["definition"]
+    if bad in {"protected", "multi"}:
+        definition["isProtected" if bad == "protected" else "isMultiDialect"] = True
+    elif bad in {"properties", "invalid_properties"}:
+        definition["properties"] = {"unsafe": True} if bad == "properties" else []
+    elif bad == "nonboolean_flag":
+        definition["isProtected"] = 0
+    elif bad == "unknown_field":
+        definition["extra"] = False
+    elif bad in {"narrow_hash", "wide_hash", "mismatched_hash_type"}:
+        dtype = {
+            "narrow_hash": "varchar(63)",
+            "wide_hash": "varchar(65)",
+            "mismatched_hash_type": "string",
+        }[bad]
+        table["StorageDescriptor"]["Columns"][2]["Type"] = dtype
+        if bad != "mismatched_hash_type":
+            definition["columns"][2]["type"] = dtype
+    elif bad == "numeric_type":
+        table["StorageDescriptor"]["Columns"][-1]["Type"] = "float"
+    else:
+        sql = definition["originalSql"]
+        before, after = {
+            "wrong_alias": (" mapped_buildings", " wrong_count"),
+            "division": ("/ mapped_buildings", "/ buildings_within"),
+            "sort": ("area_id ASC", "area_id DESC"),
+            "extra_where": ("ORDER BY", "WHERE mapped_buildings > 10 ORDER BY"),
+            "source": ("urban_geo_test_m4", "another_database"),
+        }[bad]
+        assert before in sql
+        definition["originalSql"] = sql.replace(before, after)
+    table["ViewOriginalText"] = encoded(definition)
+    with pytest.raises(ValueError):
+        CATALOG.view_state(table, plan, name)
+
+
+@pytest.mark.parametrize("field", ["snapshot", "hash", "case_arithmetic"])
+def test_engine_grid_source_and_threshold_arithmetic_stay_exact(plan, stored_views, field):
+    row = copy.deepcopy(stored_views["grid_proximity"])
+    before, after = {
+        "snapshot": ("OF 123", "OF 124"),
+        "hash": ("a" * 64, "b" * 64),
+        "case_arithmetic": ("THEN 1 ELSE 0", "THEN 0 ELSE 1"),
+    }[field]
+    row["definition"]["originalSql"] = row["definition"]["originalSql"].replace(before, after)
+    row["table"]["ViewOriginalText"] = encoded(row["definition"])
+    with pytest.raises(ValueError):
+        CATALOG.view_state(row["table"], plan, "grid_proximity")

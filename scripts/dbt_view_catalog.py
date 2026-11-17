@@ -14,7 +14,7 @@ MAX_VIEW_BYTES = 64 * 1024
 KEYWORDS = set(
     (
         "with select from as for version of group by order count sum "
-        "case when then else end cast double"
+        "case when then else end cast double asc"
     ).split()
 )
 TOKEN = re.compile(
@@ -57,6 +57,40 @@ def sql_tokens(sql: str) -> list[str]:
     return tokens
 
 
+def engine_view_tokens(sql: str, name: str) -> list[str]:
+    """Render only our fixed models in Athena's stored form; never rewrite observed SQL."""
+    tokens = sql_tokens(sql)
+    aliases = {
+        "identifier:" + n
+        for n in ("source_run_sha256", "mapped_buildings", "buildings_within", "share_within")
+    }
+    tokens = [
+        token
+        for i, token in enumerate(tokens)
+        if not (token == "keyword:as" and i + 1 < len(tokens) and tokens[i + 1] in aliases)
+    ]
+
+    def replace_once(before: list[str], after: list[str]) -> None:
+        matches = [i for i in range(len(tokens)) if tokens[i : i + len(before)] == before]
+        if len(matches) != 1:
+            raise ValueError("Unsupported canonical model expression")
+        index = matches[0]
+        tokens[index : index + len(before)] = after
+
+    if name == "grid_proximity":
+        case = sql_tokens("CASE WHEN within_threshold THEN 1 ELSE 0 END")
+        replace_once(["keyword:sum", "(", *case, ")"], ["keyword:sum", "(", "(", *case, ")", ")"])
+    elif name != "release_proximity":
+        raise ValueError("Unexpected fixed view model")
+    ratio = sql_tokens("CAST(buildings_within AS DOUBLE) / mapped_buildings")
+    replace_once(ratio, ["(", *ratio, ")"])
+    names = ["source_release", "area_id"] + (["grid_id"] if name == "grid_proximity" else [])
+    order = sql_tokens("ORDER BY " + ", ".join(names))
+    if tokens[-len(order) :] != order:
+        raise ValueError("Unsupported canonical model ordering")
+    return tokens[: -len(order)] + sql_tokens("ORDER BY " + ", ".join(n + " ASC" for n in names))
+
+
 def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
@@ -85,11 +119,19 @@ def column_pairs(value: Any, name_key: str, type_key: str) -> list[tuple[str, st
     return [(c[name_key], c[type_key]) for c in value]
 
 
-def columns(name: str, *, glue: bool = False) -> list[tuple[str, str]]:
+def columns(name: str, *, glue: bool = False, bounded_hash: bool = False) -> list[tuple[str, str]]:
     names = ["source_release", "area_id", "source_run_sha256"]
     if name == "grid_proximity":
         names.append("grid_id")
-    return [(n, "string" if glue else "varchar") for n in names] + [
+    return [
+        (
+            n,
+            "varchar(64)"
+            if bounded_hash and n == "source_run_sha256"
+            else ("string" if glue else "varchar"),
+        )
+        for n in names
+    ] + [
         ("mapped_buildings", "bigint"),
         ("buildings_within", "bigint"),
         ("share_within", "double"),
@@ -111,6 +153,8 @@ def view_state(table: dict[str, Any], plan: dict[str, Any], name: str) -> dict[s
         or len(canonical(parameters)) > 4096
     ):
         raise ValueError("Malformed or oversized view parameters/storage")
+    stored_columns = column_pairs(storage.get("Columns"), "Name", "Type")
+    bounded_hash = stored_columns == columns(name, glue=True, bounded_hash=True)
     if (
         (table.get("CatalogId"), table.get("DatabaseName"), table.get("Name"))
         != (account, schema, name)
@@ -126,7 +170,7 @@ def view_state(table: dict[str, Any], plan: dict[str, Any], name: str) -> dict[s
             storage.get(k)
             for k in ("AdditionalLocations", "SchemaReference", "InputFormat", "OutputFormat")
         )
-        or column_pairs(storage.get("Columns"), "Name", "Type") != columns(name, glue=True)
+        or stored_columns != columns(name, glue=True, bounded_hash=bounded_hash)
     ):
         raise ValueError("Unexpected view catalog identity, kind or columns")
     version = table.get("VersionId")
@@ -156,18 +200,35 @@ def view_state(table: dict[str, Any], plan: dict[str, Any], name: str) -> dict[s
         or len(canonical(definition)) > 24 * 1024
         or not {"originalSql", "catalog", "schema", "columns"} <= set(definition)
         or set(definition)
-        - {"originalSql", "catalog", "schema", "columns", "owner", "runAsInvoker"}
+        - {
+            "originalSql",
+            "catalog",
+            "schema",
+            "columns",
+            "owner",
+            "runAsInvoker",
+            "properties",
+            "isProtected",
+            "isMultiDialect",
+        }
     ):
         raise ValueError("Unsupported Athena view definition fields")
     if (
         not isinstance(definition["catalog"], str)
         or definition["catalog"].lower() != "awsdatacatalog"
         or definition["schema"] != schema
-        or column_pairs(definition["columns"], "name", "type") != columns(name)
+        or column_pairs(definition["columns"], "name", "type")
+        != columns(name, bounded_hash=bounded_hash)
+        or definition.get("properties", {}) != {}
+        or definition.get("isProtected", False) is not False
+        or definition.get("isMultiDialect", False) is not False
         or ("runAsInvoker" in definition and type(definition["runAsInvoker"]) is not bool)
         or (definition.get("owner") is not None and not isinstance(definition["owner"], str))
         or sql_tokens(definition["originalSql"])
-        != sql_tokens(compiled_models(source["binding"])[name])
+        not in (
+            sql_tokens(compiled_models(source["binding"])[name]),
+            engine_view_tokens(compiled_models(source["binding"])[name], name),
+        )
     ):
         raise ValueError("View SQL, binding or output columns differ from the prepared model")
     projection = {
@@ -181,7 +242,7 @@ def view_state(table: dict[str, Any], plan: dict[str, Any], name: str) -> dict[s
         "parameters_sha256": hashlib.sha256(canonical(parameters)).hexdigest(),
         "definition": definition,
         "parameters": parameters,
-        "columns": columns(name),
+        "columns": columns(name, bounded_hash=bounded_hash),
     }
     # SDK timestamps/HTTP fields are not needed and never enter durable JSON.
     return projection
